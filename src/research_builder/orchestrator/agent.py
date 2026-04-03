@@ -1,14 +1,21 @@
-"""Orchestrator agent: LLM-driven reasoning for spec creation and phase management (spec_v4 §4)."""
+"""Orchestrator agent: LLM-driven reasoning via Claude Agent SDK (spec_v4 §4)."""
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+import re
 from pathlib import Path
 
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ResultMessage,
+    TextBlock,
+    query,
+)
+
 from ..config import Config
-from ..llm.client import LLMClient
 from ..llm.paper import extract_full_text
 from ..models.results import SubAgentResult
 from ..models.spec import Artifact, EventType, PhaseState, Revision, SpecMetadata, SpecState
@@ -86,31 +93,19 @@ Respond with a JSON object:
 class OrchestratorAgent:
     """LLM-driven orchestrator for spec creation and phase review."""
 
-    def __init__(self, config: Config, llm_client: LLMClient) -> None:
+    def __init__(self, config: Config) -> None:
         self.config = config
-        self.llm_client = llm_client
 
     async def create_spec(self, paper_path: Path, store: SpecStore) -> SpecManager:
-        """Ingest a paper and produce the canonical spec (§4.1).
-
-        Returns a SpecManager wrapping the created spec.
-        """
+        """Ingest a paper and produce the canonical spec (§4.1)."""
         logger.info("Ingesting paper from %s", paper_path)
 
-        # Load the full paper text (orchestrator gets full context)
         paper_text = extract_full_text(paper_path)
 
-        response = await self.llm_client.create_message(
+        response_text = await self._query(
             system=SPEC_CREATION_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": f"Here is the paper:\n\n{paper_text}"}],
-            max_tokens=16384,
+            prompt=f"Here is the paper:\n\n{paper_text}",
         )
-
-        # Extract the JSON from the response
-        response_text = ""
-        for block in response.content:
-            if block.type == "text":
-                response_text += block.text
 
         parsed = _extract_json(response_text)
 
@@ -158,12 +153,7 @@ class OrchestratorAgent:
             rationale=f"Initial spec created from {paper_path.name}",
         ))
 
-        logger.info(
-            "Spec created: %d phases, dependency_graph=%s",
-            len(phases),
-            dep_graph,
-        )
-
+        logger.info("Spec created: %d phases, dependency_graph=%s", len(phases), dep_graph)
         return SpecManager(store, state)
 
     async def acceptance_review(
@@ -172,15 +162,11 @@ class OrchestratorAgent:
         result: SubAgentResult,
         spec_manager: SpecManager,
     ) -> tuple[bool, str | None]:
-        """Review a sub-agent's result for cross-phase compatibility (§6.2).
-
-        Returns (accepted: bool, feedback: str | None).
-        """
+        """Review a sub-agent's result for cross-phase compatibility (§6.2)."""
         phase = spec_manager.state.get_phase(phase_id)
         if phase is None:
             return False, f"Unknown phase: {phase_id}"
 
-        # Build context for the review
         downstream_ids = spec_manager.dep_graph.get_downstream(phase_id)
         downstream_info = []
         for ds_id in downstream_ids:
@@ -206,36 +192,53 @@ class OrchestratorAgent:
             "downstream_consumers": downstream_info,
         }
 
-        response = await self.llm_client.create_message(
+        response_text = await self._query(
             system=ACCEPTANCE_REVIEW_SYSTEM_PROMPT,
-            messages=[{
-                "role": "user",
-                "content": f"Review this phase result:\n\n```json\n{json.dumps(review_context, indent=2)}\n```",
-            }],
-            max_tokens=2048,
+            prompt=f"Review this phase result:\n\n```json\n{json.dumps(review_context, indent=2)}\n```",
         )
-
-        response_text = ""
-        for block in response.content:
-            if block.type == "text":
-                response_text += block.text
 
         parsed = _extract_json(response_text)
         accepted = parsed.get("accept", False)
         feedback = parsed.get("feedback")
 
-        logger.info(
-            "Acceptance review for phase=%s: accepted=%s, feedback=%s",
-            phase_id, accepted, feedback,
-        )
-
+        logger.info("Acceptance review for phase=%s: accepted=%s", phase_id, accepted)
         return accepted, feedback
+
+    async def _query(self, system: str, prompt: str, max_retries: int = 3) -> str:
+        """Run a single query and return the text response."""
+        import asyncio
+
+        for attempt in range(max_retries):
+            try:
+                options = ClaudeAgentOptions(
+                    system_prompt=system,
+                    model=self.config.model,
+                    permission_mode="acceptEdits",
+                    max_turns=1,
+                )
+
+                result_text = ""
+                async for message in query(prompt=prompt, options=options):
+                    if isinstance(message, AssistantMessage):
+                        for block in message.content:
+                            if isinstance(block, TextBlock):
+                                result_text += block.text
+                    elif isinstance(message, ResultMessage):
+                        if message.result:
+                            result_text = message.result
+
+                return result_text
+
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning("Query attempt %d failed: %s. Retrying...", attempt + 1, e)
+                    await asyncio.sleep(5)
+                else:
+                    raise
 
 
 def _extract_json(text: str) -> dict:
     """Extract a JSON object from text that may contain markdown code blocks."""
-    # Try to find JSON in code blocks first
-    import re
     code_block = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL)
     if code_block:
         try:
@@ -243,16 +246,13 @@ def _extract_json(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # Try the whole text
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # Try to find a JSON object in the text
     brace_start = text.find("{")
     if brace_start >= 0:
-        # Find matching closing brace
         depth = 0
         for i in range(brace_start, len(text)):
             if text[i] == "{":
@@ -265,5 +265,5 @@ def _extract_json(text: str) -> dict:
                     except json.JSONDecodeError:
                         break
 
-    logger.warning("Could not extract JSON from LLM response")
+    logger.warning("Could not extract JSON from response")
     return {}

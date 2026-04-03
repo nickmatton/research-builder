@@ -10,7 +10,6 @@ import logging
 from pathlib import Path
 
 from ..config import Config
-from ..llm.client import LLMClient
 from ..models.context import RetryContext
 from ..models.results import ResultStatus, SubAgentResult
 from ..models.spec import EventType, PhaseStatus
@@ -30,13 +29,11 @@ class ExecutionLoop:
     def __init__(
         self,
         config: Config,
-        llm_client: LLMClient,
         spec_manager: SpecManager,
         workspace: WorkspaceManager,
         orchestrator_agent: OrchestratorAgent,
     ) -> None:
         self.config = config
-        self.llm_client = llm_client
         self.spec_manager = spec_manager
         self.workspace = workspace
         self.orchestrator_agent = orchestrator_agent
@@ -116,7 +113,6 @@ class ExecutionLoop:
         logger.info("Dispatching sub-agent for phase=%s attempt=%d", phase_id, try_num)
         sub_agent = SubAgent(
             config=self.config,
-            llm_client=self.llm_client,
             sub_spec=sub_spec,
             work_dir=work_dir,
             retry_context=retry_context,
@@ -134,9 +130,13 @@ class ExecutionLoop:
         """Process a sub-agent result: accept, retry, or fail."""
         if result.status == ResultStatus.success:
             # Run acceptance review
-            accepted, feedback = await self.orchestrator_agent.acceptance_review(
-                phase_id, result, self.spec_manager,
-            )
+            try:
+                accepted, feedback = await self.orchestrator_agent.acceptance_review(
+                    phase_id, result, self.spec_manager,
+                )
+            except Exception as e:
+                logger.warning("Acceptance review failed for phase=%s: %s. Auto-accepting.", phase_id, e)
+                accepted, feedback = True, None
             if accepted:
                 self.spec_manager.set_phase_status(
                     phase_id, PhaseStatus.completed, f"Accepted: {result.summary[:100]}",

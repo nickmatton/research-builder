@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from research_builder.config import Config
-from research_builder.llm.client import LLMClient
 from research_builder.models.results import ResultStatus, SubAgentResult, TestReport
 from research_builder.models.spec import (
     Artifact,
@@ -98,13 +97,12 @@ def _failure_result(phase_id: str, **kwargs) -> SubAgentResult:
 
 @pytest.fixture
 def setup(tmp_path):
-    """Returns (config, llm_client, store, workspace) for building an execution loop."""
+    """Returns (config, store, workspace) for building an execution loop."""
     config = Config(project_root=tmp_path, max_retries=2)
-    llm_client = LLMClient(config)
     store = SpecStore(config.spec_dir)
     workspace = WorkspaceManager(config)
     workspace.initialize()
-    return config, llm_client, store, workspace
+    return config, store, workspace
 
 
 def _build_loop(setup, state, sub_agent_results, acceptance_results=None):
@@ -113,14 +111,14 @@ def _build_loop(setup, state, sub_agent_results, acceptance_results=None):
     sub_agent_results: list of SubAgentResult, popped in order for each sub-agent dispatch.
     acceptance_results: list of (accepted, feedback), popped in order. Defaults to all accepted.
     """
-    config, llm_client, store, workspace = setup
+    config, store, workspace = setup
 
     store.save_spec_md(SAMPLE_SPEC_MD)
     store.save_state(state)
     spec_manager = SpecManager(store, state)
-    orch_agent = OrchestratorAgent(config, llm_client)
+    orch_agent = OrchestratorAgent(config)
 
-    loop = ExecutionLoop(config, llm_client, spec_manager, workspace, orch_agent)
+    loop = ExecutionLoop(config, spec_manager, workspace, orch_agent)
 
     # Mock sub-agent runs
     results_iter = iter(sub_agent_results)

@@ -8,10 +8,8 @@ import sys
 from pathlib import Path
 
 import click
-from dotenv import load_dotenv
 
 from .config import Config
-from .llm.client import LLMClient
 from .orchestrator.agent import OrchestratorAgent
 from .orchestrator.loop import ExecutionLoop
 from .storage.spec_store import SpecStore
@@ -34,12 +32,9 @@ async def run_pipeline(config: Config) -> bool:
     workspace.initialize()
     logger.info("Workspace initialized at %s", config.project_root)
 
-    # Initialize LLM client
-    llm_client = LLMClient(config)
-
     # Initialize orchestrator
     store = SpecStore(config.spec_dir)
-    orchestrator_agent = OrchestratorAgent(config, llm_client)
+    orchestrator_agent = OrchestratorAgent(config)
 
     # Step 1: Create canonical spec from paper
     paper_path = config.paper_path
@@ -60,7 +55,6 @@ async def run_pipeline(config: Config) -> bool:
     click.echo("\nStarting execution loop...")
     loop = ExecutionLoop(
         config=config,
-        llm_client=llm_client,
         spec_manager=spec_manager,
         workspace=workspace,
         orchestrator_agent=orchestrator_agent,
@@ -123,7 +117,7 @@ def cli(
 
     PAPER is the path to the research paper PDF.
     """
-    load_dotenv()
+
     # Set up logging
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
