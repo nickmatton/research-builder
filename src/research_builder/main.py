@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import sys
 from pathlib import Path
 
@@ -12,8 +13,38 @@ import click
 from .config import Config
 from .orchestrator.agent import OrchestratorAgent
 from .orchestrator.loop import ExecutionLoop
+from .orchestrator.spec_manager import SpecManager
 from .storage.spec_store import SpecStore
 from .storage.workspace import WorkspaceManager
+
+
+def _copy_report(workspace: WorkspaceManager, spec_manager: SpecManager) -> bool:
+    """Find the reproduction report from the results phase and copy to report/."""
+    results_phase = spec_manager.state.get_phase("results")
+    if results_phase is None:
+        return False
+
+    # Look for markdown reports in the results phase outputs
+    try_num = results_phase.current_try or 1
+    outputs_dir = workspace.outputs_dir("results", try_num)
+    if not outputs_dir.exists():
+        return False
+
+    # Find the report file (look for common names)
+    for name in ["reproduction_report.md", "report.md"]:
+        src = outputs_dir / name
+        if src.exists():
+            workspace.report_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, workspace.report_path)
+            return True
+
+    # Fallback: any .md file in outputs (excluding _result.json)
+    for md_file in sorted(outputs_dir.glob("*.md")):
+        workspace.report_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(md_file, workspace.report_path)
+        return True
+
+    return False
 
 
 async def run_pipeline(config: Config) -> bool:
@@ -63,10 +94,18 @@ async def run_pipeline(config: Config) -> bool:
     success = await loop.run()
 
     if success:
+        # Copy reproduction report to top-level report/ directory (§10)
+        report_copied = _copy_report(workspace, spec_manager)
+
         click.echo("\nRun completed successfully!")
-        click.echo(f"Spec: {workspace.spec_md_path}")
-        click.echo(f"State: {workspace.state_path}")
-        click.echo(f"Revision log: {workspace.revision_log_path}")
+        if report_copied:
+            click.echo(f"\nReproduction report: {workspace.report_path}")
+            click.echo("-" * 60)
+            click.echo(workspace.report_path.read_text())
+            click.echo("-" * 60)
+        else:
+            click.echo("\nNote: No reproduction report found in results phase output.")
+        click.echo(f"\nSpec: {workspace.spec_md_path}")
         click.echo(f"Phases: {config.phases_dir}")
     else:
         click.echo("\nRun failed. Check the revision log for details.", err=True)
