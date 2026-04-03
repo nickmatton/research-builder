@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "research-builder"
+version = "0.1.0"
+description = "Multi-agent harness for reproducing research paper results"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.52.0",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "pdfplumber>=0.11",
+    "click>=8.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
+
+[project.scripts]
+research-builder = "research_builder.main:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/research_builder"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
