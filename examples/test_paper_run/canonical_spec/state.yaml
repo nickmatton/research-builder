@@ -1,0 +1,82 @@
+metadata:
+  paper_id: test-paper-widget-performance
+  paper_title: 'Test Paper: A Study of Widget Performance'
+  paper_url: null
+  created_at: '2026-04-03T08:35:10.043688'
+  last_modified: '2026-04-03T08:54:00.223049'
+phases:
+- phase_id: data
+  title: Data Loading & Preprocessing
+  status: completed
+  inputs: []
+  outputs:
+  - name: train_dataset
+    file_path: phases/data/1/outputs/train_dataset.pt
+  - name: test_dataset
+    file_path: phases/data/1/outputs/test_dataset.pt
+  max_debug_attempts: 10
+  current_try: 1
+- phase_id: architecture
+  title: Model Architecture
+  status: completed
+  inputs: []
+  outputs:
+  - name: model_definition
+    file_path: phases/architecture/1/outputs/model.py
+  max_debug_attempts: 10
+  current_try: 1
+- phase_id: training
+  title: Training Loop
+  status: completed
+  inputs:
+  - name: train_dataset
+    file_path: phases/data/1/outputs/train_dataset.pt
+  - name: model_definition
+    file_path: phases/architecture/1/outputs/model.py
+  outputs:
+  - name: trained_model
+    file_path: phases/training/1/outputs/checkpoint.pt
+  - name: training_logs
+    file_path: phases/training/1/outputs/training_log.json
+  max_debug_attempts: 10
+  current_try: 1
+- phase_id: eval
+  title: Evaluation
+  status: completed
+  inputs:
+  - name: trained_model
+    file_path: phases/training/1/outputs/checkpoint.pt
+  - name: test_dataset
+    file_path: phases/data/1/outputs/test_dataset.pt
+  outputs:
+  - name: eval_metrics
+    file_path: phases/eval/1/outputs/metrics.json
+  max_debug_attempts: 10
+  current_try: 1
+- phase_id: results
+  title: Results Analysis
+  status: completed
+  inputs:
+  - name: eval_metrics
+    file_path: phases/eval/1/outputs/metrics.json
+  - name: training_logs
+    file_path: phases/training/1/outputs/training_log.json
+  outputs:
+  - name: results_summary
+    file_path: phases/results/1/outputs/results_summary.md
+  - name: reproduction_report
+    file_path: phases/results/1/outputs/reproduction_report.md
+  max_debug_attempts: 10
+  current_try: 1
+dependency_graph:
+  data: []
+  architecture: []
+  training:
+  - data
+  - architecture
+  eval:
+  - training
+  - data
+  results:
+  - eval
+  - training

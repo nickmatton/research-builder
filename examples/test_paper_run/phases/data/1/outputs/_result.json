@@ -1,0 +1,67 @@
+{
+  "status": "success",
+  "summary": "Generated synthetic binary classification dataset for the \"widget performance\" paper. Since the paper does not specify a dataset, created a synthetic linearly-separable dataset with noise: 1000 train / 200 test samples, 10 features, 2 classes, balanced labels (~50/50 split). Saved as TensorDataset .pt files compatible with batch_size=32 DataLoader. All 9 tests pass covering shapes, dtypes, NaN checks, label balance, batching, reproducibility, and file loading.",
+  "outputs": [
+    {
+      "name": "train_dataset",
+      "file_path": "phases/data/1/outputs/train_dataset.pt"
+    },
+    {
+      "name": "test_dataset",
+      "file_path": "phases/data/1/outputs/test_dataset.pt"
+    }
+  ],
+  "attempts_used": 0,
+  "test_report": {
+    "tests_run": 9,
+    "tests_passed": 9,
+    "tests_failed": 0,
+    "test_details": [
+      {
+        "test_name": "test_dataset_sizes",
+        "status": "passed",
+        "description": "Train=1000, Test=200 samples"
+      },
+      {
+        "test_name": "test_feature_shape_and_dtype",
+        "status": "passed",
+        "description": "Features are float32 with shape [N, 10]"
+      },
+      {
+        "test_name": "test_label_shape_and_dtype",
+        "status": "passed",
+        "description": "Labels are int64 with shape [N]"
+      },
+      {
+        "test_name": "test_no_nans",
+        "status": "passed",
+        "description": "No NaN values in features or labels"
+      },
+      {
+        "test_name": "test_label_values",
+        "status": "passed",
+        "description": "Labels are 0 or 1"
+      },
+      {
+        "test_name": "test_label_balance",
+        "status": "passed",
+        "description": "Neither class < 30% of samples"
+      },
+      {
+        "test_name": "test_dataloader_batching",
+        "status": "passed",
+        "description": "DataLoader produces [32, 10] feature batches"
+      },
+      {
+        "test_name": "test_reproducibility",
+        "status": "passed",
+        "description": "Same seed produces identical data"
+      },
+      {
+        "test_name": "test_saved_files",
+        "status": "passed",
+        "description": "Saved .pt files load as TensorDataset"
+      }
+    ]
+  }
+}
