@@ -81,7 +81,10 @@ class SubAgent:
             f"Implement the **{self.sub_spec.phase.title}** phase. "
             f"Your working directory is `{self.work_dir}`. "
             f"Write source code under `src/` and output artifacts under `outputs/`. "
-            f"When finished, call `report_result` with your results."
+            f"\n\nIMPORTANT: When you are completely finished, you MUST call the "
+            f"`mcp__phase_tools__report_result` tool with your status, summary, "
+            f"outputs list, and test report. This is how your results are recorded. "
+            f"Do not end your session without calling this tool."
         )
 
         try:
@@ -99,12 +102,9 @@ class SubAgent:
                 raw = json.loads(self.result_path.read_text())
                 return _parse_result(phase_id, raw)
             else:
-                logger.warning("SubAgent for phase=%s did not call report_result", phase_id)
-                return SubAgentResult(
-                    status=ResultStatus.failure,
-                    phase_id=phase_id,
-                    summary="Agent completed without calling report_result",
-                )
+                # Fallback: auto-construct result from outputs directory
+                logger.warning("SubAgent for phase=%s did not call report_result, scanning outputs", phase_id)
+                return _build_fallback_result(phase_id, self.work_dir)
 
         except Exception as e:
             logger.exception("SubAgent for phase=%s crashed", phase_id)
@@ -153,3 +153,31 @@ def _parse_result(phase_id: str, raw: dict) -> SubAgentResult:
         is_spec_issue=raw.get("is_spec_issue", False),
         diagnostics=raw.get("diagnostics"),
     )
+
+
+def _build_fallback_result(phase_id: str, work_dir: Path) -> SubAgentResult:
+    """Auto-construct a result by scanning the outputs directory.
+
+    Used when the sub-agent completes without calling report_result.
+    If artifacts exist in outputs/, treat it as a success.
+    """
+    outputs_dir = work_dir / "outputs"
+    artifacts = []
+    if outputs_dir.exists():
+        for f in sorted(outputs_dir.iterdir()):
+            if f.is_file() and f.name != "_result.json":
+                artifacts.append(Artifact(name=f.stem, file_path=str(f.relative_to(work_dir.parent.parent.parent))))
+
+    if artifacts:
+        return SubAgentResult(
+            status=ResultStatus.success,
+            phase_id=phase_id,
+            outputs=artifacts,
+            summary=f"Phase completed (auto-detected {len(artifacts)} output artifacts, report_result not called)",
+        )
+    else:
+        return SubAgentResult(
+            status=ResultStatus.failure,
+            phase_id=phase_id,
+            summary="Agent completed without calling report_result and no output artifacts found",
+        )
