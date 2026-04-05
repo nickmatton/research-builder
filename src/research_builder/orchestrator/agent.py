@@ -105,6 +105,7 @@ class OrchestratorAgent:
         response_text = await self._query(
             system=SPEC_CREATION_SYSTEM_PROMPT,
             prompt=f"Here is the paper:\n\n{paper_text}",
+            tools=[],  # Pure reasoning — no tools needed
         )
 
         parsed = _extract_json(response_text)
@@ -195,6 +196,8 @@ class OrchestratorAgent:
         response_text = await self._query(
             system=ACCEPTANCE_REVIEW_SYSTEM_PROMPT,
             prompt=f"Review this phase result:\n\n```json\n{json.dumps(review_context, indent=2)}\n```",
+            tools=["Read", "Bash", "Glob", "Grep"],
+            max_turns=3,
         )
 
         parsed = _extract_json(response_text)
@@ -204,18 +207,36 @@ class OrchestratorAgent:
         logger.info("Acceptance review for phase=%s: accepted=%s", phase_id, accepted)
         return accepted, feedback
 
-    async def _query(self, system: str, prompt: str, max_retries: int = 3) -> str:
+    async def _query(
+        self,
+        system: str,
+        prompt: str,
+        max_retries: int = 3,
+        tools: list[str] | None = None,
+        max_turns: int = 1,
+    ) -> str:
         """Run a single query and return the text response."""
         import asyncio
 
         for attempt in range(max_retries):
             try:
+                stderr_lines: list[str] = []
+
+                def capture_stderr(line: str) -> None:
+                    stderr_lines.append(line)
+                    if "error" in line.lower() or "fatal" in line.lower() or "exception" in line.lower():
+                        logger.error("CLI stderr: %s", line)
+
                 options = ClaudeAgentOptions(
                     system_prompt=system,
                     model=self.config.model,
-                    permission_mode="acceptEdits",
-                    max_turns=1,
+                    permission_mode="bypassPermissions",
+                    cwd=str(self.config.project_root),
+                    max_turns=max_turns,
+                    stderr=capture_stderr,
                 )
+                if tools is not None:
+                    options.allowed_tools = tools
 
                 result_text = ""
                 async for message in query(prompt=prompt, options=options):
@@ -230,9 +251,13 @@ class OrchestratorAgent:
                 return result_text
 
             except Exception as e:
+                if stderr_lines:
+                    logger.error("CLI stderr (%d lines):\n%s", len(stderr_lines), "\n".join(stderr_lines[-20:]))
+                else:
+                    logger.error("CLI failed with no stderr output")
                 if attempt < max_retries - 1:
                     logger.warning("Query attempt %d failed: %s. Retrying...", attempt + 1, e)
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(3)
                 else:
                     raise
 

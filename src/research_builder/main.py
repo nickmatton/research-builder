@@ -11,6 +11,13 @@ from pathlib import Path
 import click
 
 from .config import Config
+from .interaction import (
+    UserAction,
+    open_in_editor,
+    prompt_after_phase,
+    prompt_after_spec,
+    prompt_skip_which_phase,
+)
 from .orchestrator.agent import OrchestratorAgent
 from .orchestrator.loop import ExecutionLoop
 from .orchestrator.spec_manager import SpecManager
@@ -24,13 +31,11 @@ def _copy_report(workspace: WorkspaceManager, spec_manager: SpecManager) -> bool
     if results_phase is None:
         return False
 
-    # Look for markdown reports in the results phase outputs
     try_num = results_phase.current_try or 1
     outputs_dir = workspace.outputs_dir("results", try_num)
     if not outputs_dir.exists():
         return False
 
-    # Find the report file (look for common names)
     for name in ["reproduction_report.md", "report.md"]:
         src = outputs_dir / name
         if src.exists():
@@ -38,7 +43,6 @@ def _copy_report(workspace: WorkspaceManager, spec_manager: SpecManager) -> bool
             shutil.copy2(src, workspace.report_path)
             return True
 
-    # Fallback: any .md file in outputs (excluding _result.json)
     for md_file in sorted(outputs_dir.glob("*.md")):
         workspace.report_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(md_file, workspace.report_path)
@@ -48,14 +52,7 @@ def _copy_report(workspace: WorkspaceManager, spec_manager: SpecManager) -> bool
 
 
 async def run_pipeline(config: Config) -> bool:
-    """Execute the full paper reproduction pipeline.
-
-    1. Initialize workspace
-    2. Ingest paper and create canonical spec
-    3. Run execution loop (dispatch sub-agents per phase)
-
-    Returns True if the run completed successfully.
-    """
+    """Execute the full paper reproduction pipeline."""
     logger = logging.getLogger(__name__)
 
     # Initialize workspace
@@ -76,25 +73,39 @@ async def run_pipeline(config: Config) -> bool:
 
     click.echo(f"Ingesting paper: {paper_path}")
     spec_manager = await orchestrator_agent.create_spec(paper_path, store)
-    click.echo(f"Spec created: {len(spec_manager.state.phases)} phases")
+    click.echo(f"\nSpec created: {len(spec_manager.state.phases)} phases")
     for phase in spec_manager.state.phases:
         deps = spec_manager.dep_graph.get_dependencies(phase.phase_id)
         dep_str = f" (depends on: {', '.join(deps)})" if deps else ""
         click.echo(f"  - {phase.phase_id}: {phase.title}{dep_str}")
 
-    # Step 2: Run execution loop
+    # Checkpoint: review spec
+    if config.interactive:
+        action = prompt_after_spec(workspace.spec_md_path)
+        if action == UserAction.ABORT:
+            click.echo("Aborted.")
+            return False
+
+    # Step 2: Build phase callback for interactive mode
+    def on_phase_complete(phase_id: str, result):
+        """Called after each phase. Returns UserAction."""
+        if not config.interactive:
+            return UserAction.CONTINUE
+        return prompt_after_phase(phase_id, result)
+
+    # Step 3: Run execution loop
     click.echo("\nStarting execution loop...")
     loop = ExecutionLoop(
         config=config,
         spec_manager=spec_manager,
         workspace=workspace,
         orchestrator_agent=orchestrator_agent,
+        on_phase_complete=on_phase_complete,
     )
 
     success = await loop.run()
 
     if success:
-        # Copy reproduction report to top-level report/ directory (§10)
         report_copied = _copy_report(workspace, spec_manager)
 
         click.echo("\nRun completed successfully!")
@@ -140,6 +151,11 @@ async def run_pipeline(config: Config) -> bool:
     help="Max debug attempts per sub-agent invocation",
 )
 @click.option(
+    "--auto",
+    is_flag=True,
+    help="Run without interactive checkpoints",
+)
+@click.option(
     "--verbose", "-v",
     is_flag=True,
     help="Enable verbose logging",
@@ -150,13 +166,16 @@ def cli(
     model: str,
     max_retries: int,
     max_debug_attempts: int,
+    auto: bool,
     verbose: bool,
 ) -> None:
     """Reproduce a research paper's results.
 
     PAPER is the path to the research paper PDF.
-    """
 
+    By default, the pipeline pauses after spec creation and each phase
+    for human review. Use --auto to run without prompts.
+    """
     # Set up logging
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
@@ -173,6 +192,7 @@ def cli(
         model=model,
         max_retries=max_retries,
         max_debug_attempts=max_debug_attempts,
+        interactive=not auto,
     )
 
     # Run

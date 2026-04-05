@@ -1,0 +1,95 @@
+{
+  "status": "success",
+  "summary": "Implemented the complete training loop for the Transformer model following the paper's specifications. Key components:\n\n1. **LR Scheduler** (`lr_scheduler.py`): Implements the warmup-then-decay schedule: `lrate = d_model^(-0.5) * min(step^(-0.5), step * warmup_steps^(-1.5))` with warmup_steps=4000. Peak LR occurs at step 4000, with linear warmup before and inverse sqrt decay after.\n\n2. **Training Script** (`train.py`): Full training loop with:\n   - Adam optimizer (\u03b2\u2081=0.9, \u03b2\u2082=0.98, \u03b5=10\u207b\u2079) with lr=1.0 (absolute LR computed by scheduler)\n   - Label smoothing loss (\u03b5_ls=0.1) using KL-divergence with uniform smoothing distribution, padding-aware\n   - Proper source padding masks and target causal+padding masks\n   - Teacher forcing with shifted target (tgt[:,:-1] as input, tgt[:,1:] as target)\n   - Time-based checkpoint saving (configurable, default 10-minute intervals)\n   - Checkpoint averaging utility for final model (last 5 for base, last 20 for big)\n   - Training log saved as JSON with step, loss, LR, epoch\n   - CLI with configurable hyperparameters\n\n3. **Training Run**: Ran 200 steps on CPU with small batches as validation. Loss decreased from ~7.4 to ~5.7, confirming the loop works correctly. 200 checkpoints and training log produced.\n\nAll 13 tests pass covering: LR formula correctness, warmup/decay behavior, peak at warmup_steps, label smoothing properties (padding ignored, confident predictions lower loss), mask shapes, gradient finiteness, checkpoint save/load round-trip, checkpoint averaging, and end-to-end loss decrease.",
+  "outputs": [
+    {
+      "name": "Training script",
+      "file_path": "phases/training/1/outputs/train.py"
+    },
+    {
+      "name": "Learning rate scheduler",
+      "file_path": "phases/training/1/outputs/lr_scheduler.py"
+    },
+    {
+      "name": "Trained model checkpoints",
+      "file_path": "phases/training/1/outputs/checkpoints/"
+    },
+    {
+      "name": "Training logs",
+      "file_path": "phases/training/1/outputs/training_log.json"
+    }
+  ],
+  "test_report": {
+    "tests_run": 13,
+    "tests_passed": 13,
+    "tests_failed": 0,
+    "test_details": [
+      {
+        "test_name": "test_lr_schedule_formula",
+        "status": "passed",
+        "description": "LR formula matches paper at key steps (1, 100, 1000, 4000, 8000, 100000)"
+      },
+      {
+        "test_name": "test_lr_warmup_then_decay",
+        "status": "passed",
+        "description": "LR increases during warmup and decreases after warmup_steps"
+      },
+      {
+        "test_name": "test_lr_peak_at_warmup",
+        "status": "passed",
+        "description": "Peak LR occurs at warmup_steps=4000 with expected value d_model^{-0.5} * warmup^{-0.5}"
+      },
+      {
+        "test_name": "test_lr_scheduler_with_optimizer",
+        "status": "passed",
+        "description": "Scheduler integrates correctly with PyTorch Adam optimizer"
+      },
+      {
+        "test_name": "test_label_smoothing_loss",
+        "status": "passed",
+        "description": "Label smoothing loss is scalar, positive, and finite"
+      },
+      {
+        "test_name": "test_label_smoothing_ignores_padding",
+        "status": "passed",
+        "description": "Loss is 0 when all targets are padding tokens"
+      },
+      {
+        "test_name": "test_label_smoothing_confident_prediction",
+        "status": "passed",
+        "description": "Confident correct predictions yield lower loss than uniform predictions"
+      },
+      {
+        "test_name": "test_masks",
+        "status": "passed",
+        "description": "Source padding mask and target causal+padding mask have correct shapes and values"
+      },
+      {
+        "test_name": "test_no_nan_gradients",
+        "status": "passed",
+        "description": "No NaN/Inf in gradients over 5 training steps"
+      },
+      {
+        "test_name": "test_checkpoint_save_load",
+        "status": "passed",
+        "description": "Checkpoint round-trip preserves model weights, optimizer state, step/epoch"
+      },
+      {
+        "test_name": "test_checkpoint_averaging",
+        "status": "passed",
+        "description": "Averaging 3 checkpoints with weights 1,2,3 produces weights of 2.0"
+      },
+      {
+        "test_name": "test_training_produces_checkpoint_files",
+        "status": "passed",
+        "description": "Training writes checkpoint .pt files and valid JSON training log"
+      },
+      {
+        "test_name": "test_training_loss_decreases",
+        "status": "passed",
+        "description": "Loss decreases over 50 steps (avg first 5 > avg last 5)"
+      }
+    ]
+  },
+  "attempts_used": 1
+}

@@ -1,0 +1,27 @@
+{
+  "en_de": {
+    "bleu": 0.0,
+    "brevity_penalty": 0.0,
+    "precisions": [
+      0.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    "reference_length": 199,
+    "hypothesis_length": 0
+  },
+  "paper_reported": {
+    "en_de_base": 27.3,
+    "en_de_big": 28.4,
+    "en_fr_base": 38.1,
+    "en_fr_big": 41.8
+  },
+  "eval_config": {
+    "beam_size": 2,
+    "length_penalty_alpha": 0.6,
+    "max_extra_len": 20,
+    "num_avg_checkpoints": 3,
+    "num_eval_samples": 10
+  }
+}

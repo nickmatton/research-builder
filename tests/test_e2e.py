@@ -54,6 +54,7 @@ class TestEndToEnd:
             project_root=tmp_path,
             max_retries=2,
             max_debug_attempts=5,
+            interactive=False,
         )
 
         dispatched_phases: list[str] = []
@@ -70,7 +71,7 @@ class TestEndToEnd:
             )
 
         # Mock orchestrator's _query method
-        async def mock_orch_query(self_agent, system, prompt):
+        async def mock_orch_query(self_agent, system, prompt, **kwargs):
             if "research paper analyst" in system:
                 return _spec_creation_response()
             else:
@@ -104,7 +105,7 @@ class TestEndToEnd:
     @pytest.mark.asyncio
     async def test_pipeline_with_retry(self, tmp_path):
         """Data phase fails once, then succeeds on retry."""
-        config = Config(paper_path=FIXTURE_PDF, project_root=tmp_path, max_retries=2)
+        config = Config(paper_path=FIXTURE_PDF, project_root=tmp_path, max_retries=2, interactive=False)
 
         attempt_count: dict[str, int] = {}
 
@@ -123,7 +124,7 @@ class TestEndToEnd:
                 test_report=TestReport(tests_run=1, tests_passed=1, tests_failed=0),
             )
 
-        async def mock_orch_query(self_agent, system, prompt):
+        async def mock_orch_query(self_agent, system, prompt, **kwargs):
             if "research paper analyst" in system:
                 return _spec_creation_response()
             return '{"accept": true, "feedback": null}'

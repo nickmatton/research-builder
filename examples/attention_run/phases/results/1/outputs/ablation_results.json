@@ -1,0 +1,215 @@
+{
+  "source": "Table 3 - Variations on the Transformer architecture",
+  "eval_set": "newstest2013 (EN-DE dev set)",
+  "base_model": {
+    "heads": 8,
+    "d_k": 64,
+    "d_v": 64,
+    "ppl": 4.92,
+    "bleu": 25.8,
+    "params_M": 65
+  },
+  "big_model": {
+    "N": 6,
+    "d_model": 1024,
+    "d_ff": 4096,
+    "heads": 16,
+    "P_drop": 0.3,
+    "train_steps": "300K",
+    "ppl": 4.33,
+    "bleu": 26.4,
+    "params_M": 213
+  },
+  "findings": [
+    {
+      "experiment": "A: Number of attention heads",
+      "observation": "Single-head attention is 0.9 BLEU worse than best (h=8). Too many heads (h=32) also degrades quality.",
+      "paper_values": {
+        "A_h1": {
+          "heads": 1,
+          "d_k": 512,
+          "d_v": 512,
+          "ppl": 5.29,
+          "bleu": 24.9,
+          "note": "single head"
+        },
+        "A_h4": {
+          "heads": 4,
+          "d_k": 128,
+          "d_v": 128,
+          "ppl": 5.0,
+          "bleu": 25.5
+        },
+        "A_h16": {
+          "heads": 16,
+          "d_k": 32,
+          "d_v": 32,
+          "ppl": 4.91,
+          "bleu": 25.8
+        },
+        "A_h32": {
+          "heads": 32,
+          "d_k": 16,
+          "d_v": 16,
+          "ppl": 5.01,
+          "bleu": 25.4
+        }
+      },
+      "baseline": {
+        "heads": 8,
+        "d_k": 64,
+        "d_v": 64,
+        "ppl": 4.92,
+        "bleu": 25.8,
+        "params_M": 65
+      },
+      "directionally_consistent": true
+    },
+    {
+      "experiment": "B: Attention key dimension",
+      "observation": "Reducing d_k hurts model quality, suggesting compatibility function matters.",
+      "paper_values": {
+        "B_dk16": {
+          "heads": 8,
+          "d_k": 16,
+          "ppl": 5.16,
+          "bleu": 25.1,
+          "params_M": 58
+        },
+        "B_dk32": {
+          "heads": 8,
+          "d_k": 32,
+          "ppl": 5.01,
+          "bleu": 25.4,
+          "params_M": 60
+        }
+      },
+      "baseline": {
+        "heads": 8,
+        "d_k": 64,
+        "d_v": 64,
+        "ppl": 4.92,
+        "bleu": 25.8,
+        "params_M": 65
+      },
+      "directionally_consistent": true
+    },
+    {
+      "experiment": "C: Model size",
+      "observation": "Bigger models are better (more layers, larger d_model, larger d_ff all help).",
+      "paper_values": {
+        "C_N2": {
+          "N": 2,
+          "ppl": 6.11,
+          "bleu": 23.7,
+          "params_M": 36
+        },
+        "C_N4": {
+          "N": 4,
+          "ppl": 5.19,
+          "bleu": 25.3,
+          "params_M": 50
+        },
+        "C_N8": {
+          "N": 8,
+          "ppl": 4.88,
+          "bleu": 25.5,
+          "params_M": 80
+        },
+        "C_dmodel256": {
+          "d_model": 256,
+          "d_k": 32,
+          "d_v": 32,
+          "ppl": 5.75,
+          "bleu": 24.5,
+          "params_M": 28
+        },
+        "C_dmodel1024": {
+          "d_model": 1024,
+          "d_k": 128,
+          "d_v": 128,
+          "ppl": 4.66,
+          "bleu": 26.0,
+          "params_M": 168
+        },
+        "C_dff1024": {
+          "d_ff": 1024,
+          "ppl": 5.12,
+          "bleu": 25.4,
+          "params_M": 53
+        },
+        "C_dff4096": {
+          "d_ff": 4096,
+          "ppl": 4.75,
+          "bleu": 26.2,
+          "params_M": 90
+        }
+      },
+      "baseline": {
+        "heads": 8,
+        "d_k": 64,
+        "d_v": 64,
+        "ppl": 4.92,
+        "bleu": 25.8,
+        "params_M": 65
+      },
+      "directionally_consistent": true
+    },
+    {
+      "experiment": "D: Regularization",
+      "observation": "Dropout is critical for avoiding overfitting. Label smoothing hurts perplexity but improves BLEU.",
+      "paper_values": {
+        "D_drop0": {
+          "P_drop": 0.0,
+          "ppl": 5.77,
+          "bleu": 24.6
+        },
+        "D_drop02": {
+          "P_drop": 0.2,
+          "ppl": 4.95,
+          "bleu": 25.5
+        },
+        "D_ls0": {
+          "eps_ls": 0.0,
+          "ppl": 4.67,
+          "bleu": 25.3
+        },
+        "D_ls02": {
+          "eps_ls": 0.2,
+          "ppl": 5.47,
+          "bleu": 25.7
+        }
+      },
+      "baseline": {
+        "heads": 8,
+        "d_k": 64,
+        "d_v": 64,
+        "ppl": 4.92,
+        "bleu": 25.8,
+        "params_M": 65
+      },
+      "directionally_consistent": true
+    },
+    {
+      "experiment": "E: Positional encoding",
+      "observation": "Learned positional embeddings produce nearly identical results to sinusoidal (25.7 vs 25.8 BLEU).",
+      "paper_values": {
+        "E_learned": {
+          "positional": "learned",
+          "ppl": 4.92,
+          "bleu": 25.7,
+          "note": "learned positional embeddings"
+        }
+      },
+      "baseline": {
+        "heads": 8,
+        "d_k": 64,
+        "d_v": 64,
+        "ppl": 4.92,
+        "bleu": 25.8,
+        "params_M": 65
+      },
+      "directionally_consistent": true
+    }
+  ]
+}

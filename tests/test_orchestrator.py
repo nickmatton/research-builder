@@ -282,7 +282,7 @@ class TestOrchestratorAcceptanceReview:
             test_report=TestReport(tests_run=5, tests_passed=5, tests_failed=0),
         )
 
-        async def mock_query(self_agent, system, prompt):
+        async def mock_query(self_agent, system, prompt, **kwargs):
             return '{"accept": true, "feedback": null}'
 
         with patch.object(OrchestratorAgent, "_query", mock_query):
@@ -303,7 +303,7 @@ class TestOrchestratorAcceptanceReview:
             summary="Done",
         )
 
-        async def mock_query(self_agent, system, prompt):
+        async def mock_query(self_agent, system, prompt, **kwargs):
             return '{"accept": false, "feedback": "No output artifacts produced"}'
 
         with patch.object(OrchestratorAgent, "_query", mock_query):

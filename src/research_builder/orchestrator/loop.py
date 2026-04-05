@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Callable
+
+import click
 
 from ..config import Config
+from ..interaction import UserAction, open_in_editor, prompt_skip_which_phase
 from ..models.context import RetryContext
 from ..models.results import ResultStatus, SubAgentResult
 from ..models.spec import EventType, PhaseStatus
-from ..storage.spec_store import SpecStore
 from ..storage.workspace import WorkspaceManager
 from .agent import OrchestratorAgent
 from .failure import FailureHandler
@@ -32,12 +35,14 @@ class ExecutionLoop:
         spec_manager: SpecManager,
         workspace: WorkspaceManager,
         orchestrator_agent: OrchestratorAgent,
+        on_phase_complete: Callable[[str, SubAgentResult], UserAction] | None = None,
     ) -> None:
         self.config = config
         self.spec_manager = spec_manager
         self.workspace = workspace
         self.orchestrator_agent = orchestrator_agent
         self.failure_handler = FailureHandler(max_retries=config.max_retries)
+        self.on_phase_complete = on_phase_complete or (lambda pid, r: UserAction.CONTINUE)
 
     async def run(self) -> bool:
         """Execute all phases. Returns True if the run completed successfully."""
@@ -71,7 +76,6 @@ class ExecutionLoop:
             # Find runnable phases
             runnable = self.spec_manager.get_runnable_phases()
             if not runnable:
-                # Check if anything is in progress (shouldn't happen in sequential mode)
                 in_progress = [p for p in self.spec_manager.state.phases if p.status == PhaseStatus.in_progress]
                 if in_progress:
                     logger.warning("No runnable phases but %d in progress — possible deadlock", len(in_progress))
@@ -83,7 +87,6 @@ class ExecutionLoop:
             # MVP: execute sequentially
             for phase_id in runnable:
                 await self._execute_phase(phase_id)
-                # After each phase, re-evaluate (status may have changed)
                 break  # Re-enter the while loop to recompute runnable
 
     async def _execute_phase(self, phase_id: str) -> None:
@@ -126,6 +129,28 @@ class ExecutionLoop:
         # Handle result
         await self._handle_result(phase_id, result)
 
+        # Human checkpoint
+        action = self.on_phase_complete(phase_id, result)
+        if action == UserAction.ABORT:
+            self.spec_manager.log_event(EventType.run_failed, rationale="Aborted by user")
+            # Mark all non-completed phases as failed to exit the loop
+            for p in self.spec_manager.state.phases:
+                if p.status not in (PhaseStatus.completed, PhaseStatus.failed):
+                    p.status = PhaseStatus.failed
+            self.spec_manager.save()
+        elif action == UserAction.EDIT_SPEC:
+            spec_path = self.spec_manager.store.spec_md_path
+            open_in_editor(spec_path)
+            click.echo("Spec updated. Continuing...")
+        elif action == UserAction.SKIP:
+            runnable = self.spec_manager.get_runnable_phases()
+            skip_id = prompt_skip_which_phase(runnable)
+            if skip_id:
+                self.spec_manager.set_phase_status(
+                    skip_id, PhaseStatus.completed, "Skipped by user",
+                )
+                click.echo(f"  Skipped phase '{skip_id}'.")
+
     async def _handle_result(self, phase_id: str, result: SubAgentResult) -> None:
         """Process a sub-agent result: accept, retry, or fail."""
         if result.status == ResultStatus.success:
@@ -161,7 +186,6 @@ class ExecutionLoop:
 
         # Handle failure
         if result.is_spec_issue:
-            # Spec issues don't count against retry budget — set back to pending
             logger.info("Spec issue reported for phase=%s: %s", phase_id, result.summary)
             self.spec_manager.set_phase_status(
                 phase_id, PhaseStatus.pending,
@@ -191,7 +215,6 @@ class ExecutionLoop:
                 rationale=f"Implementation failure, retry {retries}/{self.config.max_retries}",
             )
         else:
-            # Exhausted retries
             logger.error("Phase %s exhausted all retries", phase_id)
             self.spec_manager.set_phase_status(
                 phase_id, PhaseStatus.failed,

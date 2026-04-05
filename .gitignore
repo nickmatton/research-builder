@@ -6,3 +6,6 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+
+# Large binary artifacts from pipeline runs
+*.pt

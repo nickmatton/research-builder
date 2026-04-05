@@ -1,0 +1,39 @@
+{
+  "reproduced": {
+    "en_de_bleu": 0.0,
+    "training_steps": 200,
+    "final_loss": 5.748126029968262,
+    "training_duration_seconds": 235.0
+  },
+  "paper_reported": {
+    "en_de_base_bleu": 27.3,
+    "en_de_big_bleu": 28.4,
+    "en_fr_base_bleu": 38.1,
+    "en_fr_big_bleu": 41.8
+  },
+  "discrepancy": {
+    "en_de_bleu_diff": -27.3,
+    "likely_causes": [
+      "Reduced training steps (200 vs 100K)",
+      "Small subset of training data",
+      "Fewer checkpoint averages (3 vs 5)",
+      "Reduced beam size (2 vs 4)",
+      "Limited eval samples (10)"
+    ]
+  },
+  "eval_config": {
+    "beam_size": 2,
+    "length_penalty_alpha": 0.6,
+    "max_extra_len": 20,
+    "num_avg_checkpoints": 3,
+    "num_eval_samples": 10
+  },
+  "acceptance_criteria": {
+    "en_de_base_target": 27.3,
+    "en_de_big_target": 28.4,
+    "en_fr_base_target": 38.1,
+    "en_fr_big_target": 41.8,
+    "en_de_met": false,
+    "note": "Full reproduction requires 100K+ steps on full WMT14 data with 8 P100 GPUs"
+  }
+}

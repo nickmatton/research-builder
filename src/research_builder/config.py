@@ -31,6 +31,9 @@ class Config:
     # Phases to run (None = all standard phases)
     phases: list[str] | None = None
 
+    # Interactive mode (human-in-the-loop checkpoints)
+    interactive: bool = True
+
     @property
     def paper_dir(self) -> Path:
         return self.project_root / "paper"

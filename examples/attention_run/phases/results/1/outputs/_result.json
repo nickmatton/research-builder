@@ -1,0 +1,165 @@
+{
+  "status": "success",
+  "summary": "Generated all reproduction report artifacts for \"Attention Is All You Need\". Loaded BLEU scores (EN-DE: 0.0 due to minimal training) and training logs (200 steps) from upstream phases. Compared reproduced values against paper-reported values (Table 2: 27.3/28.4 EN-DE, 38.1/41.8 EN-FR). Documented all ablation findings from Table 3 (5 experiment groups, all directionally consistent). Produced discrepancy analysis attributing the BLEU gap to reduced training budget. All 4 output files generated: results_summary.json, ablation_results.json, comparison_table.md, and reproduction_report.md.",
+  "outputs": [
+    {
+      "name": "Results summary",
+      "file_path": "phases/results/1/outputs/results_summary.json"
+    },
+    {
+      "name": "Ablation study results",
+      "file_path": "phases/results/1/outputs/ablation_results.json"
+    },
+    {
+      "name": "Comparison table",
+      "file_path": "phases/results/1/outputs/comparison_table.md"
+    },
+    {
+      "name": "Reproduction report",
+      "file_path": "phases/results/1/outputs/reproduction_report.md"
+    }
+  ],
+  "attempts_used": 0,
+  "test_report": {
+    "tests_run": 27,
+    "tests_passed": 27,
+    "tests_failed": 0,
+    "test_details": [
+      {
+        "test_name": "generation_runs",
+        "status": "passed",
+        "description": "Main generation pipeline completes without error"
+      },
+      {
+        "test_name": "file_exists_results_summary.json",
+        "status": "passed",
+        "description": "results_summary.json exists and is non-empty"
+      },
+      {
+        "test_name": "file_exists_ablation_results.json",
+        "status": "passed",
+        "description": "ablation_results.json exists and is non-empty"
+      },
+      {
+        "test_name": "file_exists_comparison_table.md",
+        "status": "passed",
+        "description": "comparison_table.md exists and is non-empty"
+      },
+      {
+        "test_name": "file_exists_reproduction_report.md",
+        "status": "passed",
+        "description": "reproduction_report.md exists and is non-empty"
+      },
+      {
+        "test_name": "summary_has_reproduced_bleu",
+        "status": "passed",
+        "description": "Summary contains reproduced BLEU score"
+      },
+      {
+        "test_name": "summary_has_paper_values",
+        "status": "passed",
+        "description": "Summary contains paper-reported values"
+      },
+      {
+        "test_name": "summary_has_discrepancy",
+        "status": "passed",
+        "description": "Summary contains discrepancy analysis"
+      },
+      {
+        "test_name": "summary_discrepancy_correct",
+        "status": "passed",
+        "description": "Discrepancy value correctly computed"
+      },
+      {
+        "test_name": "ablation_has_5_findings",
+        "status": "passed",
+        "description": "Ablation results contain all 5 experiment groups"
+      },
+      {
+        "test_name": "ablation_has_base_model",
+        "status": "passed",
+        "description": "Ablation includes base model reference"
+      },
+      {
+        "test_name": "ablation_directionally_consistent",
+        "status": "passed",
+        "description": "All findings directionally consistent with paper"
+      },
+      {
+        "test_name": "table_has_headers",
+        "status": "passed",
+        "description": "Comparison table has EN-DE and EN-FR BLEU headers"
+      },
+      {
+        "test_name": "table_has_transformer_rows",
+        "status": "passed",
+        "description": "Table includes both Transformer base and big"
+      },
+      {
+        "test_name": "table_has_baseline_models",
+        "status": "passed",
+        "description": "Table includes ConvS2S, GNMT, MoE baselines"
+      },
+      {
+        "test_name": "table_has_key_bleu_values",
+        "status": "passed",
+        "description": "Table contains key BLEU values (27.3, 28.4, 41.8)"
+      },
+      {
+        "test_name": "report_has_section_headers",
+        "status": "passed",
+        "description": "Report has \u22655 markdown section headers"
+      },
+      {
+        "test_name": "report_has_section_machine_translation_results",
+        "status": "passed",
+        "description": "Report contains Machine Translation Results section"
+      },
+      {
+        "test_name": "report_has_section_training_summary",
+        "status": "passed",
+        "description": "Report contains Training Summary section"
+      },
+      {
+        "test_name": "report_has_section_discrepancy_analysis",
+        "status": "passed",
+        "description": "Report contains Discrepancy Analysis section"
+      },
+      {
+        "test_name": "report_has_section_ablation_study",
+        "status": "passed",
+        "description": "Report contains Ablation Study section"
+      },
+      {
+        "test_name": "report_has_section_comparison_table",
+        "status": "passed",
+        "description": "Report contains Comparison Table section"
+      },
+      {
+        "test_name": "report_training_curve_has_data",
+        "status": "passed",
+        "description": "Training curve figure contains actual data points"
+      },
+      {
+        "test_name": "report_has_lr_schedule",
+        "status": "passed",
+        "description": "Report includes learning rate schedule"
+      },
+      {
+        "test_name": "report_is_substantive",
+        "status": "passed",
+        "description": "Report is >2000 chars (substantive content)"
+      },
+      {
+        "test_name": "report_has_acceptance_criteria",
+        "status": "passed",
+        "description": "Report includes acceptance criteria evaluation"
+      },
+      {
+        "test_name": "report_comparison_values_populated",
+        "status": "passed",
+        "description": "Comparison section contains numeric values (not blank)"
+      }
+    ]
+  }
+}
