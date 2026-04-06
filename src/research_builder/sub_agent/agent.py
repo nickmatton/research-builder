@@ -65,6 +65,12 @@ class SubAgent:
         paper_path = Path(self.sub_spec.paper_path) if self.sub_spec.paper_path else Path("paper.pdf")
         phase_tools = create_phase_tools(paper_path, self.result_path)
 
+        # Capture stderr for diagnostics
+        stderr_lines: list[str] = []
+
+        def capture_stderr(line: str) -> None:
+            stderr_lines.append(line)
+
         # Build agent options
         options = ClaudeAgentOptions(
             system_prompt=system_prompt,
@@ -74,6 +80,7 @@ class SubAgent:
             permission_mode="bypassPermissions",
             model=self.config.model,
             max_turns=self.sub_spec.phase.max_debug_attempts * 5,
+            stderr=capture_stderr,
         )
 
         # User message to kick off the agent
@@ -107,7 +114,25 @@ class SubAgent:
                 return _build_fallback_result(phase_id, self.work_dir)
 
         except Exception as e:
-            logger.exception("SubAgent for phase=%s crashed", phase_id)
+            logger.error(
+                "SubAgent for phase=%s crashed: %s\n"
+                "  work_dir: %s\n"
+                "  system_prompt: %d chars\n"
+                "  max_turns: %d",
+                phase_id, e,
+                self.work_dir,
+                len(system_prompt),
+                self.sub_spec.phase.max_debug_attempts * 5,
+            )
+            if stderr_lines:
+                logger.debug("Full sub-agent stderr (%d lines):\n%s", len(stderr_lines), "\n".join(stderr_lines))
+                # Log error-level lines specifically
+                error_lines = [l for l in stderr_lines if "error" in l.lower() and "debug" not in l.lower()]
+                if error_lines:
+                    logger.error("Sub-agent stderr errors:\n%s", "\n".join(error_lines[-10:]))
+            else:
+                logger.error("Sub-agent exited with no stderr")
+            logger.exception("Full traceback:")
             return SubAgentResult(
                 status=ResultStatus.failure,
                 phase_id=phase_id,

@@ -54,6 +54,7 @@ def _copy_report(workspace: WorkspaceManager, spec_manager: SpecManager) -> bool
 async def run_pipeline(config: Config) -> bool:
     """Execute the full paper reproduction pipeline."""
     logger = logging.getLogger(__name__)
+    log_dir = config.project_root / "logs"
 
     # Initialize workspace
     workspace = WorkspaceManager(config)
@@ -105,6 +106,11 @@ async def run_pipeline(config: Config) -> bool:
 
     success = await loop.run()
 
+    # Log final status for each phase
+    logger.info("=== Run Summary ===")
+    for phase in spec_manager.state.phases:
+        logger.info("  %s: %s", phase.phase_id, phase.status.value)
+
     if success:
         report_copied = _copy_report(workspace, spec_manager)
 
@@ -118,8 +124,10 @@ async def run_pipeline(config: Config) -> bool:
             click.echo("\nNote: No reproduction report found in results phase output.")
         click.echo(f"\nSpec: {workspace.spec_md_path}")
         click.echo(f"Phases: {config.phases_dir}")
+        click.echo(f"Log: {log_dir / 'run.log'}")
     else:
-        click.echo("\nRun failed. Check the revision log for details.", err=True)
+        click.echo("\nRun failed. Check logs for details.", err=True)
+        click.echo(f"Log: {log_dir / 'run.log'}", err=True)
         click.echo(f"Revision log: {workspace.revision_log_path}", err=True)
 
     return success
@@ -176,16 +184,38 @@ def cli(
     By default, the pipeline pauses after spec creation and each phase
     for human review. Use --auto to run without prompts.
     """
-    # Set up logging
-    level = logging.DEBUG if verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(name)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
     # Build config
     project_root = output or Path(".")
+
+    # Set up logging — console + file
+    console_level = logging.DEBUG if verbose else logging.INFO
+    log_dir = project_root.resolve() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "run.log"
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)  # capture everything
+
+    # Console handler (respects --verbose)
+    console = logging.StreamHandler()
+    console.setLevel(console_level)
+    console.setFormatter(logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
+    root_logger.addHandler(console)
+
+    # File handler (always DEBUG)
+    file_handler = logging.FileHandler(log_file, mode="w")
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(name)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    root_logger.addHandler(file_handler)
+
+    # Suppress noisy third-party loggers in console
+    for noisy in ["pdfminer", "httpx", "httpcore", "anyio"]:
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    click.echo(f"Log file: {log_file}")
     config = Config(
         paper_path=paper.resolve(),
         project_root=project_root.resolve(),

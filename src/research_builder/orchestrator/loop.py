@@ -121,7 +121,27 @@ class ExecutionLoop:
             retry_context=retry_context,
         )
         result = await sub_agent.run()
-        logger.info("Sub-agent returned: phase=%s status=%s", phase_id, result.status.value)
+
+        # Log result details
+        logger.info(
+            "Sub-agent returned: phase=%s status=%s attempts=%d summary=%s",
+            phase_id, result.status.value, result.attempts_used, result.summary[:200],
+        )
+        if result.test_report.tests_run > 0:
+            tr = result.test_report
+            logger.info(
+                "  Tests: %d/%d passed, %d failed",
+                tr.tests_passed, tr.tests_run, tr.tests_failed,
+            )
+            for t in tr.test_details:
+                if t.status.value != "passed":
+                    logger.warning("  FAIL %s: %s", t.test_name, t.message or t.description)
+        if result.outputs:
+            logger.info("  Outputs: %s", ", ".join(f"{o.name} ({o.file_path})" for o in result.outputs))
+        if result.is_spec_issue:
+            logger.warning("  Flagged as SPEC ISSUE")
+        if result.diagnostics:
+            logger.info("  Diagnostics: %s", result.diagnostics)
 
         # Record result
         self.failure_handler.record_result(phase_id, result)

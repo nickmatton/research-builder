@@ -251,14 +251,31 @@ class OrchestratorAgent:
                 return result_text
 
             except Exception as e:
+                logger.error(
+                    "Query failed (attempt %d/%d): %s\n"
+                    "  system_prompt: %d chars (%.50s...)\n"
+                    "  prompt: %d chars\n"
+                    "  tools: %s\n"
+                    "  max_turns: %d\n"
+                    "  cwd: %s",
+                    attempt + 1, max_retries, e,
+                    len(system), system[:50],
+                    len(prompt),
+                    tools,
+                    max_turns,
+                    self.config.project_root,
+                )
                 if stderr_lines:
-                    logger.error("CLI stderr (%d lines):\n%s", len(stderr_lines), "\n".join(stderr_lines[-20:]))
+                    # Log all stderr to file, last 20 lines to console
+                    logger.debug("Full CLI stderr (%d lines):\n%s", len(stderr_lines), "\n".join(stderr_lines))
+                    logger.error("CLI stderr (last 20 lines):\n%s", "\n".join(stderr_lines[-20:]))
                 else:
-                    logger.error("CLI failed with no stderr output")
+                    logger.error("CLI exited with no stderr — process may have crashed on startup")
                 if attempt < max_retries - 1:
-                    logger.warning("Query attempt %d failed: %s. Retrying...", attempt + 1, e)
+                    logger.warning("Retrying in 3s...")
                     await asyncio.sleep(3)
                 else:
+                    logger.error("All %d attempts exhausted for this query", max_retries)
                     raise
 
 
