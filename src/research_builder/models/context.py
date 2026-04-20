@@ -35,10 +35,25 @@ class AdjacentPhaseSummary(BaseModel):
 SubSpec.model_rebuild()
 
 
+class PostMortem(BaseModel):
+    """Orchestrator's structured diagnosis of a failed sub-agent attempt.
+
+    Produced by ``OrchestratorAgent.post_mortem`` after each retryable failure
+    (and after final exhaustion). Persisted in full to
+    ``logs/postmortems/<phase>/try_<N>.md`` and injected into the next
+    sub-agent's RetryContext.
+    """
+    failure_hypothesis: str
+    suggested_fix: str = ""
+    is_likely_spec_issue: bool = False
+    confidence: str = "medium"  # "low" | "medium" | "high"
+
+
 class RetryContext(BaseModel):
     """Context passed to sub-agent on retry (§4.4)."""
     prior_results: list[SubAgentResult] = Field(default_factory=list)
     orchestrator_feedback: str | None = None
+    post_mortem: PostMortem | None = None
 
 
 class RunStatus(str, Enum):

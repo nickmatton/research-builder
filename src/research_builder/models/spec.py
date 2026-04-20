@@ -60,7 +60,62 @@ class PhaseState(BaseModel):
     inputs: list[Artifact] = Field(default_factory=list)
     outputs: list[Artifact] = Field(default_factory=list)
     max_debug_attempts: int = 10
-    current_try: int = 0
+
+
+class FileRole(str, Enum):
+    input = "input"
+    output = "output"
+    intermediate = "intermediate"
+
+
+class FileStatus(str, Enum):
+    planned = "planned"
+    in_progress = "in_progress"
+    written = "written"
+    verified = "verified"
+
+
+class PlannedFile(BaseModel):
+    """A file the spec plans to produce/consume, tracked through its lifecycle."""
+    file_id: str
+    rel_path: str
+    owning_phase: str
+    role: FileRole
+    description: str = ""
+    depends_on: list[str] = Field(default_factory=list)
+    status: FileStatus = FileStatus.planned
+
+
+class DagNode(BaseModel):
+    """A planning-view node: phase plus its sub-steps and owned files."""
+    phase_id: str
+    title: str
+    description: str = ""
+    sub_steps: list[str] = Field(default_factory=list)
+    file_ids: list[str] = Field(default_factory=list)
+    depends_on: list[str] = Field(default_factory=list)
+    status: PhaseStatus = PhaseStatus.pending
+
+
+class PlanDocument(BaseModel):
+    """Explicit DAG + file plan emitted by the orchestrator at spec time."""
+    nodes: list[DagNode] = Field(default_factory=list)
+    files: list[PlannedFile] = Field(default_factory=list)
+
+    def get_node(self, phase_id: str) -> DagNode | None:
+        for n in self.nodes:
+            if n.phase_id == phase_id:
+                return n
+        return None
+
+    def files_for_phase(self, phase_id: str) -> list[PlannedFile]:
+        return [f for f in self.files if f.owning_phase == phase_id]
+
+    def get_file(self, file_id: str) -> PlannedFile | None:
+        for f in self.files:
+            if f.file_id == file_id:
+                return f
+        return None
 
 
 class SpecMetadata(BaseModel):
@@ -80,6 +135,7 @@ class SpecState(BaseModel):
     metadata: SpecMetadata
     phases: list[PhaseState] = Field(default_factory=list)
     dependency_graph: dict[str, list[str]] = Field(default_factory=dict)
+    plan: PlanDocument | None = None
 
     def get_phase(self, phase_id: str) -> PhaseState | None:
         for phase in self.phases:

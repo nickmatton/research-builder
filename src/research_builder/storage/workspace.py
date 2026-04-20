@@ -19,9 +19,8 @@ class WorkspaceManager:
         │   └── revision_log.yaml
         ├── phases/
         │   └── <phase_id>/
-        │       └── <try_num>/
-        │           ├── src/
-        │           └── outputs/
+        │       ├── src/
+        │       └── outputs/
         └── report/
     """
 
@@ -35,33 +34,36 @@ class WorkspaceManager:
         self.config.spec_dir.mkdir(parents=True, exist_ok=True)
         self.config.phases_dir.mkdir(parents=True, exist_ok=True)
         self.config.report_dir.mkdir(parents=True, exist_ok=True)
+        self.config.logs_dir.mkdir(parents=True, exist_ok=True)
+        (self.config.logs_dir / "postmortems").mkdir(parents=True, exist_ok=True)
+        (self.config.logs_dir / "spec_amendments").mkdir(parents=True, exist_ok=True)
+        self.config.context_dir.mkdir(parents=True, exist_ok=True)
+
+    def postmortem_path(self, phase_id: str, retry_num: int = 0) -> Path:
+        d = self.config.logs_dir / "postmortems" / phase_id
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"retry_{retry_num}.md"
+
+    def amendment_path(self, phase_id: str, amendment_num: int) -> Path:
+        d = self.config.logs_dir / "spec_amendments" / phase_id
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"amendment_{amendment_num}.md"
 
     def phase_dir(self, phase_id: str) -> Path:
         return self.config.phases_dir / phase_id
 
-    def attempt_dir(self, phase_id: str, try_num: int) -> Path:
-        return self.phase_dir(phase_id) / str(try_num)
+    def src_dir(self, phase_id: str) -> Path:
+        return self.phase_dir(phase_id) / "src"
 
-    def src_dir(self, phase_id: str, try_num: int) -> Path:
-        return self.attempt_dir(phase_id, try_num) / "src"
+    def outputs_dir(self, phase_id: str) -> Path:
+        return self.phase_dir(phase_id) / "outputs"
 
-    def outputs_dir(self, phase_id: str, try_num: int) -> Path:
-        return self.attempt_dir(phase_id, try_num) / "outputs"
-
-    def create_attempt(self, phase_id: str, try_num: int) -> Path:
-        """Create directories for a new sub-agent attempt. Returns the attempt dir."""
-        attempt = self.attempt_dir(phase_id, try_num)
-        self.src_dir(phase_id, try_num).mkdir(parents=True, exist_ok=True)
-        self.outputs_dir(phase_id, try_num).mkdir(parents=True, exist_ok=True)
-        return attempt
-
-    def next_try_num(self, phase_id: str) -> int:
-        """Return the next attempt number for a phase (1-indexed)."""
+    def create_phase_dir(self, phase_id: str) -> Path:
+        """Create directories for a phase. Returns the phase dir."""
         phase = self.phase_dir(phase_id)
-        if not phase.exists():
-            return 1
-        existing = [int(d.name) for d in phase.iterdir() if d.is_dir() and d.name.isdigit()]
-        return max(existing, default=0) + 1
+        self.src_dir(phase_id).mkdir(parents=True, exist_ok=True)
+        self.outputs_dir(phase_id).mkdir(parents=True, exist_ok=True)
+        return phase
 
     @property
     def spec_md_path(self) -> Path:

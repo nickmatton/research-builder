@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+from ..models.context import PostMortem
 from ..models.results import SubAgentResult
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,14 @@ class FailureHandler:
     max_retries: int = 3
     _retry_counts: dict[str, int] = field(default_factory=dict)
     _results: dict[str, list[SubAgentResult]] = field(default_factory=dict)
+    _post_mortems: dict[str, PostMortem] = field(default_factory=dict)
+
+    def set_post_mortem(self, phase_id: str, post_mortem: PostMortem) -> None:
+        """Stash the latest post-mortem for a phase. Read by _execute_phase on retry."""
+        self._post_mortems[phase_id] = post_mortem
+
+    def get_post_mortem(self, phase_id: str) -> PostMortem | None:
+        return self._post_mortems.get(phase_id)
 
     def record_result(self, phase_id: str, result: SubAgentResult) -> None:
         """Record a sub-agent result for a phase."""

@@ -21,8 +21,17 @@ and debug until everything works — then report your result.
 - **read_file / write_file / edit_file**: Read and modify files in your workspace.
 - **bash**: Run shell commands (install packages, execute scripts, run tests). \
 Your working directory is the phase attempt directory.
+- **search_paper**: Semantically search the research paper for relevant passages. \
+Use this BEFORE read_paper_section — it finds the right pages for you by matching \
+your query against the paper's content. Returns chunks with page numbers and \
+section headings. Follow up with read_paper_section if you need more surrounding context.
 - **read_paper_section**: Read specific pages from the research paper PDF. \
-Use this for targeted lookup — do not read the entire paper.
+Use this for targeted lookup when you know the page number, or to get more \
+context around results from search_paper.
+- **lookup_citation**: Look up a cited paper by title via Semantic Scholar. \
+Returns the paper's abstract and key metadata. Use this when the spec or paper \
+references a method, dataset, or technique from another paper (e.g. "we follow \
+the preprocessing of Smith et al.") and you need implementation details.
 - **report_result**: Submit your final result when done. This ends your session.
 
 ## Workflow
@@ -201,7 +210,7 @@ def _format_sub_spec(sub_spec: SubSpec) -> str:
     # Paper location
     if sub_spec.paper_path:
         lines.append(f"\n### Paper\nAvailable at: `{sub_spec.paper_path}`")
-        lines.append("Use `read_paper_section` for targeted retrieval of specific pages.")
+        lines.append("Use `search_paper` to find relevant passages by topic, then `read_paper_section` for full page context.")
 
     # Spec markdown (the rich content from spec.md)
     if sub_spec.spec_markdown:
@@ -223,6 +232,25 @@ def _format_retry_context(retry_context: RetryContext) -> str:
 
     if retry_context.orchestrator_feedback:
         lines.append(f"\n### Orchestrator Feedback\n{retry_context.orchestrator_feedback}")
+
+    if retry_context.post_mortem:
+        pm = retry_context.post_mortem
+        lines.append("\n### Orchestrator Post-Mortem")
+        lines.append(
+            "The orchestrator examined the previous attempt's logs and outputs "
+            "and produced this structured diagnosis. Use it to plan your next "
+            "attempt — do not repeat the same approach without addressing the "
+            "hypothesis."
+        )
+        lines.append(f"\n**Failure hypothesis** ({pm.confidence} confidence): {pm.failure_hypothesis}")
+        if pm.suggested_fix:
+            lines.append(f"\n**Suggested fix:** {pm.suggested_fix}")
+        if pm.is_likely_spec_issue:
+            lines.append(
+                "\n**Note:** The orchestrator suspects this is a spec issue. "
+                "If you agree, call `report_result` with `is_spec_issue: true` "
+                "immediately rather than burning debug attempts."
+            )
 
     for i, result in enumerate(retry_context.prior_results, 1):
         lines.append(f"\n### Attempt {i} (status: {result.status.value})")

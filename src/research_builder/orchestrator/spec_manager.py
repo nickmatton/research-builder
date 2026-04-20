@@ -16,10 +16,28 @@ logger = logging.getLogger(__name__)
 class SpecManager:
     """Owns the canonical spec state. Handles amendments and sub-spec extraction."""
 
+    MAX_AMENDMENTS_PER_PHASE = 5
+
     def __init__(self, store: SpecStore, state: SpecState) -> None:
         self.store = store
         self.state = state
         self.dep_graph = DependencyGraph.from_spec_state(state)
+        # Per-phase amendment count for the spec refinement loop. Capped at
+        # MAX_AMENDMENTS_PER_PHASE — at the cap we escalate to the human
+        # checkpoint instead of looping forever.
+        self._amendment_counts: dict[str, int] = {}
+
+    def amendment_count(self, phase_id: str) -> int:
+        return self._amendment_counts.get(phase_id, 0)
+
+    def can_amend(self, phase_id: str) -> bool:
+        return self.amendment_count(phase_id) < self.MAX_AMENDMENTS_PER_PHASE
+
+    def record_amendment(self, phase_id: str) -> int:
+        """Bump the per-phase amendment count and return the new count."""
+        n = self._amendment_counts.get(phase_id, 0) + 1
+        self._amendment_counts[phase_id] = n
+        return n
 
     def save(self) -> None:
         """Persist current state to disk."""

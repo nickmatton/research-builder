@@ -9,3 +9,24 @@ build/
 
 # Large binary artifacts from pipeline runs
 *.pt
+
+# OS cruft
+.DS_Store
+
+# Runtime state from harness runs
+canonical_spec/
+phases/
+logs/
+context/
+report/
+
+# Backups from prior runs
+*.bak.*/
+canonical_spec.bak.*/
+phases.bak.*/
+
+# Archived / large scratch (e.g. 4GB .archive/)
+.archive/
+
+# Per-paper scratch dirs (pre-migration; replaced by papers/<slug>/ later)
+attentionisallyouneed/

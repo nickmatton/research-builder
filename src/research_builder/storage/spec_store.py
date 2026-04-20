@@ -6,7 +6,10 @@ from pathlib import Path
 
 import yaml
 
-from ..models.spec import Revision, SpecState
+import json
+
+from ..models.claims import ClaimsLedger
+from ..models.spec import PlanDocument, Revision, SpecState
 
 
 class SpecStore:
@@ -22,6 +25,9 @@ class SpecStore:
         self.spec_md_path = spec_dir / "spec.md"
         self.state_path = spec_dir / "state.yaml"
         self.revision_log_path = spec_dir / "revision_log.yaml"
+        self.dag_path = spec_dir / "dag.json"
+        self.file_plan_path = spec_dir / "file_plan.json"
+        self.claims_path = spec_dir / "claims.yaml"
 
     # --- spec.md (markdown) ---
 
@@ -57,6 +63,40 @@ class SpecStore:
             return []
         data = yaml.safe_load(self.revision_log_path.read_text()) or []
         return [Revision.model_validate(r) for r in data]
+
+    # --- dag.json + file_plan.json (derived plan artifacts) ---
+
+    def save_plan(self, plan: PlanDocument) -> None:
+        """Write dag.json and file_plan.json as derived projections of the plan."""
+        self.spec_dir.mkdir(parents=True, exist_ok=True)
+        dag_data = {"nodes": [n.model_dump(mode="json") for n in plan.nodes]}
+        file_plan_data = {"files": [f.model_dump(mode="json") for f in plan.files]}
+        self.dag_path.write_text(json.dumps(dag_data, indent=2))
+        self.file_plan_path.write_text(json.dumps(file_plan_data, indent=2))
+
+    def load_plan(self) -> PlanDocument | None:
+        if not self.dag_path.exists() or not self.file_plan_path.exists():
+            return None
+        dag_data = json.loads(self.dag_path.read_text())
+        file_plan_data = json.loads(self.file_plan_path.read_text())
+        return PlanDocument.model_validate({
+            "nodes": dag_data.get("nodes", []),
+            "files": file_plan_data.get("files", []),
+        })
+
+    # --- claims.yaml ---
+
+    def save_claims(self, ledger: ClaimsLedger) -> None:
+        self.spec_dir.mkdir(parents=True, exist_ok=True)
+        data = [c.model_dump(mode="json") for c in ledger.claims]
+        self.claims_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))
+
+    def load_claims(self) -> ClaimsLedger:
+        if not self.claims_path.exists():
+            return ClaimsLedger()
+        data = yaml.safe_load(self.claims_path.read_text()) or []
+        from ..models.claims import Claim
+        return ClaimsLedger(claims=[Claim.model_validate(c) for c in data])
 
     def append_revision(self, revision: Revision) -> None:
         existing: list[dict] = []

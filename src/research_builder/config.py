@@ -34,6 +34,10 @@ class Config:
     # Interactive mode (human-in-the-loop checkpoints)
     interactive: bool = True
 
+    # Per-run hard cap on Lambda Cloud GPU spend (USD). Provisioning that would
+    # exceed this triggers an operator approval prompt (asks to raise the cap).
+    gpu_budget_usd: float = 30.0
+
     @property
     def paper_dir(self) -> Path:
         return self.project_root / "paper"
@@ -49,3 +53,13 @@ class Config:
     @property
     def report_dir(self) -> Path:
         return self.project_root / "report"
+
+    @property
+    def logs_dir(self) -> Path:
+        """Human-readable run artifacts: post-mortems, spec-amendment records."""
+        return self.project_root / "logs"
+
+    @property
+    def context_dir(self) -> Path:
+        """Per-attempt snapshots of what each sub-agent actually saw (system_prompt, sub_spec, kickoff)."""
+        return self.project_root / "context"

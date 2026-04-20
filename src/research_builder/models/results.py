@@ -47,3 +47,4 @@ class SubAgentResult(BaseModel):
     attempts_used: int = 1
     is_spec_issue: bool = False
     diagnostics: dict[str, Any] | None = None
+    cost_usd: float = 0.0
