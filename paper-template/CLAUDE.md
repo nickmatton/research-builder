@@ -25,7 +25,7 @@ reference so it's trivially falsifiable.
 - **<claim_id>**: <metric> = <value> on <dataset> — <Table/Figure X, page N>
 - ...
 
-Full structured ledger: `notes/claims.md`.
+Full structured ledger: `notes/claims.yaml`.
 
 ## Method / architecture
 
@@ -77,9 +77,9 @@ bash scripts/reproduce.sh          # 4. full reproduction
 When you sit down to work on this repo:
 
 1. **Read `notes/plan.md` first.** Don't start coding without a plan.
-2. **Follow `skills/verification-ladder`.** Cheapest gate first. Do not skip rungs.
+2. **Follow `.claude/skills/verification-ladder.md`.** Cheapest gate first. Do not skip rungs.
 3. **Every full run logs to `notes/journal.md`.** One row per run. Git SHA, config hash, key metrics, duration.
-4. **Every failed run gets a post-mortem** per `skills/post-mortem` before retrying.
+4. **Every failed run gets a post-mortem** per `.claude/skills/post-mortem.md` before retrying.
 5. **Every discrepancy with the paper gets resolved in this file** (`CLAUDE.md`), not in the chat.
 
 ## Open questions / known gotchas

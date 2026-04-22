@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "paper": {
+      "command": "rb-mcp-paper",
+      "env": {
+        "PAPER_PDF_PATH": "paper/paper.pdf"
+      }
+    },
+    "arxiv": {
+      "command": "rb-mcp-arxiv"
+    },
+    "claims": {
+      "command": "rb-mcp-claims",
+      "env": {
+        "CLAIMS_PATH": "notes/claims.yaml"
+      }
+    }
+  }
+}

@@ -9,6 +9,7 @@ description = "Multi-agent harness for reproducing research paper results"
 requires-python = ">=3.11"
 dependencies = [
     "claude-agent-sdk>=0.1.0",
+    "mcp>=1.0",
     "pydantic>=2.0",
     "pyyaml>=6.0",
     "pdfplumber>=0.11",
@@ -31,6 +32,9 @@ dev = [
 [project.scripts]
 research-builder = "research_builder.main:cli"
 research-builder-viewer = "research_builder.viewer.cli:main"
+rb-mcp-paper = "research_builder.mcp_servers.paper_reader:main"
+rb-mcp-arxiv = "research_builder.mcp_servers.arxiv:main"
+rb-mcp-claims = "research_builder.mcp_servers.claims:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/research_builder"]

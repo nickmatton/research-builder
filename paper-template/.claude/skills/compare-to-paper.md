@@ -5,7 +5,7 @@ description: Verify a run's numeric results against the claims ledger. Flags sus
 
 # Compare to Paper
 
-This is the acceptance gate. Every full reproduction run feeds through it. Inputs: the run's result metrics + `notes/claims.md`. Output: a claims-verification table and a go/no-go.
+This is the acceptance gate. Every full reproduction run feeds through it. Inputs: the run's result metrics + `notes/claims.yaml`. Output: a claims-verification table and a go/no-go.
 
 ## Status rubric
 
@@ -60,7 +60,7 @@ A run that produces "good" final metrics but has a divergent loss curve is almos
 
 1. Run `scripts/reproduce.sh` (or equivalent full reproduction).
 2. Load `runs/<run-id>/metrics.json`.
-3. Load `notes/claims.md`.
+3. Load `notes/claims.yaml`.
 4. For each claim, find the matching metric in the run output. Compute delta and assign status.
 5. Render the table above.
 6. If any `missed` or `exceeded (margin > 2×)`: write a post-mortem before accepting.

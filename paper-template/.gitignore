@@ -1,0 +1,19 @@
+# Datasets and run artifacts — never commit, can be huge
+data/
+runs/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# ML artifacts
+*.pt
+*.ckpt
+*.safetensors
+wandb/
+
+# OS
+.DS_Store

@@ -34,11 +34,11 @@ Port source: `src/research_builder/literature/`.
 
 ## 3. `claims_server.py`
 
-CRUD over `notes/claims.md` + runs the compare-to-paper logic from `skills/compare-to-paper.md`. This is the one *new* server — the current harness does all of this in-process in `orchestrator/claims.py` and `models/claims.py`.
+CRUD over `notes/claims.yaml` + runs the compare-to-paper logic from `paper-template/.claude/skills/compare-to-paper.md`. This is the one *new* server — the current harness does all of this in-process in `orchestrator/claims.py` and `models/claims.py`.
 
 Tools:
 
-- `list_claims()` — list all claims from `notes/claims.md`.
+- `list_claims()` — list all claims from `notes/claims.yaml`.
 - `add_claim(claim_id, metric, value, tolerance?, unit?, dataset?, condition?, source?, phase?, notes?)` — append a claim row.
 - `get_claim(claim_id)` — fetch one.
 - `verify_claim(claim_id, actual_value)` — classify as verified / close / missed / exceeded (returns status + delta + delta_pct).
@@ -61,7 +61,7 @@ Claim = {
 }
 ```
 
-Storage: `notes/claims.md` in the paper repo. Machine-readable YAML frontmatter per row, human-readable table body. The server parses and writes the table.
+Storage: `notes/claims.yaml` in the paper repo. Machine-readable YAML frontmatter per row, human-readable table body. The server parses and writes the table.
 
 Port source: `src/research_builder/models/claims.py` + `src/research_builder/orchestrator/claims.py` (which implements the verification logic — status assignment, tolerance/relative-delta rules).
 
@@ -84,7 +84,7 @@ Each paper's `.mcp.json`:
     "claims": {
       "command": "python",
       "args": ["/path/to/research-builder/mcp/claims_server.py"],
-      "env": { "CLAIMS_PATH": "notes/claims.md" }
+      "env": { "CLAIMS_PATH": "notes/claims.yaml" }
     }
   }
 }
