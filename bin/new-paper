@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# new-paper — scaffold a new paper repo from paper-template/.
+#
+#   bin/new-paper <slug> [destination-dir] [path/to/paper.pdf]
+#
+# Examples:
+#   bin/new-paper bert ~/papers/bert ~/Downloads/bert.pdf
+#   bin/new-paper bert ~/papers/bert        # without PDF; drop it manually later
+#   bin/new-paper bert                       # → papers/bert/ inside this repo
+#
+# After scaffolding:
+#   1. cd into the new paper repo
+#   2. Drop a PDF at paper/paper.pdf if you didn't pass one
+#   3. uv pip install pdfplumber pyyaml httpx torch  (or your env's equivalent)
+#   4. python scripts/extract-paper-text.py
+#   5. claude .  # then: "read paper/paper.txt and fill in CLAUDE.md + notes/claims.yaml"
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+    echo "usage: $0 <slug> [destination-dir] [path/to/paper.pdf]" >&2
+    exit 1
+fi
+
+SLUG="$1"
+DEST="${2:-papers/${SLUG}}"
+PDF_PATH="${3:-}"
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TEMPLATE="${REPO_ROOT}/paper-template"
+
+if [ ! -d "${TEMPLATE}" ]; then
+    echo "error: ${TEMPLATE} not found" >&2
+    exit 1
+fi
+
+if [ -e "${DEST}" ]; then
+    echo "error: ${DEST} already exists" >&2
+    exit 1
+fi
+
+echo "[new-paper] copying template → ${DEST}"
+cp -r "${TEMPLATE}" "${DEST}"
+
+# Replace placeholder <PAPER TITLE> with the slug as a starting point.
+sed -i.bak "s|<PAPER TITLE>|${SLUG}|g" "${DEST}/CLAUDE.md"
+rm "${DEST}/CLAUDE.md.bak"
+
+if [ -n "${PDF_PATH}" ]; then
+    if [ ! -f "${PDF_PATH}" ]; then
+        echo "error: PDF not found at ${PDF_PATH}" >&2
+        exit 1
+    fi
+    mkdir -p "${DEST}/paper"
+    cp "${PDF_PATH}" "${DEST}/paper/paper.pdf"
+    echo "[new-paper] PDF copied to ${DEST}/paper/paper.pdf"
+fi
+
+echo
+echo "[new-paper] scaffolded ${DEST}/"
+echo
+echo "next steps:"
+echo "  cd ${DEST}"
+if [ -z "${PDF_PATH}" ]; then
+    echo "  mkdir -p paper && cp /path/to/paper.pdf paper/paper.pdf"
+fi
+echo "  uv pip install pdfplumber pyyaml httpx torch"
+echo "  python scripts/extract-paper-text.py"
+echo "  claude ."

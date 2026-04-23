@@ -1,5 +1,7 @@
 # research-builder
 
+[![tests](https://github.com/nickmatton/research-builder/actions/workflows/tests.yml/badge.svg)](https://github.com/nickmatton/research-builder/actions/workflows/tests.yml)
+
 A toolkit for reproducing research-paper results using Claude Code. One paper = one repo, scaffolded from a template, driven by an opinionated methodology: **claims-first, verification-ladder, post-mortem on every failure.**
 
 ```
@@ -101,11 +103,15 @@ See [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md) for the phase plan, gates, and what
 
 ```bash
 git clone https://github.com/nickmatton/research-builder.git
-cp -r research-builder/paper-template ~/papers/<paper-slug>
-cd ~/papers/<paper-slug>
+cd research-builder
 
-mkdir -p paper && cp /path/to/paper.pdf paper/paper.pdf
-uv pip install pdfplumber pyyaml          # only deps for the helper scripts
+# Scaffold a new paper repo (anywhere). The slug becomes the dir name.
+bin/new-paper bert ~/papers/bert /path/to/bert.pdf
+# Or, without a PDF (drop it in later):
+bin/new-paper bert ~/papers/bert
+
+cd ~/papers/bert
+uv pip install pdfplumber pyyaml httpx torch
 python scripts/extract-paper-text.py      # → paper/paper.txt
 
 claude .                                  # open Claude Code
