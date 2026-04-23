@@ -90,7 +90,10 @@ The harness was the right thing to build first. It validated the methodology end
 | [`99294c6`](../../commit/99294c6) | Migration plan committed | +193 |
 | [`e6f5c3d`](../../commit/e6f5c3d) | Phase 1: extract methodology to skills + templates | +456 |
 | [`8b96670`](../../commit/8b96670) | Phase 2: MCP servers + paper template | +830 |
-| [`d2014ca`](../../commit/d2014ca) | Phase 2.5: drop MCP, switch to built-in tools | -249 (net) |
+| [`d2014ca`](../../commit/d2014ca) | Phase 2.5: drop MCP, switch to built-in tools | −249 net |
+| [`7d8e083`](../../commit/7d8e083) | Phase 3 (partial): scaffold attention-is-all-you-need + README rewrite | +1901 |
+| [`bb3af4b`](../../commit/bb3af4b) | Phase 3: real implementation plan for the paper | +59 |
+| [`1ad9c17`](../../commit/1ad9c17) | Phase 3: real PyTorch transformer + verification ladder green through smoke | +765 |
 
 See [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md) for the phase plan, gates, and what's next.
 

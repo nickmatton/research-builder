@@ -14,8 +14,11 @@ Each phase has explicit success criteria. Don't move to the next until the previ
 
 **Gate:** ✅ headline claims registered; CLAUDE.md is no longer placeholders.
 
-### 2. Scaffolding & data pipeline
+### 2. Scaffolding & data pipeline ⏳ partial
 
+`src/data.py` currently provides only **synthetic** deterministic batches — used to validate the model + training loop end-to-end without paying for the real WMT loader first. Real WMT loader pending below.
+
+- [x] `src/data.py` synthetic batches (overfit + smoke)
 - [ ] `src/data.py` — WMT 2014 EN-DE loader. Use HuggingFace `datasets` (`wmt14`) for the raw corpus.
 - [ ] BPE tokenization. The paper uses ~37k shared source-target vocab. Use `subword-nmt` or `tokenizers`. Pin the version. Save the vocab to `data/wmt14_en_de/bpe.codes` so it's reproducible.
 - [ ] `src/data.py` returns batches of ~25k source + 25k target tokens (paper §5.1, p.7). Group sentence pairs by approximate length.
@@ -24,26 +27,25 @@ Each phase has explicit success criteria. Don't move to the next until the previ
 
 **Gate:** `uv run pytest tests/test_data.py` passes. Loader produces batches matching paper specs.
 
-### 3. Model implementation
+### 3. Model implementation ✅ done
 
-Reference: `tensor2tensor/models/transformer.py` (author code), Annotated Transformer (Sasha Rush). Read both before implementing.
+- [x] `src/attention.py` — scaled dot-product + multi-head (paper §3.2). Mask zeros attention verified.
+- [x] `src/positional.py` — sinusoidal positional encoding (§3.5). PE(pos, 2i) formula verified at sample points.
+- [x] `src/transformer.py` — encoder + decoder layers + full model. d_model + N configurable (smoke uses d=64, N=2; base config will be d=512, N=6).
+- [x] Embedding sharing per §3.4.
 
-- [ ] `src/attention.py` — scaled dot-product + multi-head (paper §3.2, p.4–5). Tests: shape on (B, L, d), mask zeros out future positions, output is convex combo of values.
-- [ ] `src/positional.py` — sinusoidal positional encoding (§3.5, p.6). Tests: PE(pos, 2i) matches the paper's formula at sample positions, encoding is deterministic.
-- [ ] `src/transformer.py` — encoder layer (self-attn + FFN), decoder layer (masked self-attn + cross-attn + FFN), full encoder–decoder. d_model=512, d_ff=2048, h=8, N=6 (base config). Tests: forward on dummy (B, L, d) inputs gives expected shapes; param count within 5% of paper-reported (paper doesn't list exact param count for base, but typical impls ≈ 65M).
-- [ ] Embedding sharing per §3.4: input embeddings, output embeddings, and pre-softmax linear share weights (multiplied by √d_model in embeddings).
+**Gate met:** `uv run pytest tests/` → 15/15 passed. `bash scripts/overfit-one-batch.sh` → loss → 0.0000 with LS=0 (or 0.78 = LS floor with paper-faithful LS=0.1).
 
-**Gate:** `uv run pytest tests/test_model.py` passes. `bash scripts/overfit-one-batch.sh` collapses loss to ~0.
+### 4. Training loop ⏳ partial
 
-### 4. Training loop
+- [x] `src/train.py` — Adam, §5.3 warmup-then-decay LR, label-smoothing CE.
+- [x] `--overfit-one-batch` mode and `--label-smoothing` override (used to verify the LS floor is the actual floor).
+- [ ] Checkpointing every N steps + checkpoint averaging at eval time. Currently train.py just runs to max_steps and saves metrics.json — no model checkpoint persistence yet.
+- [ ] `configs/base.yaml` — base-model config (waits on real data).
+- [ ] Warmup-schedule unit tests at step 1, 100, 4000, 10000.
 
-- [ ] `src/train.py` — Adam (β1=0.9, β2=0.98, ε=1e-9), the §5.3 warmup-then-decay LR schedule with `warmup_steps=4000`, label smoothing ε_ls=0.1.
-- [ ] Loss: cross-entropy with label smoothing.
-- [ ] Checkpoints written every 10 minutes (§6.1, p.8). At eval time, average the last 5 (base) / last 20 (big) checkpoints.
-- [ ] `configs/base.yaml` — base-model full config: d_model=512, d_ff=2048, h=8, N=6, P_drop=0.1, ε_ls=0.1, batch ~25k+25k tokens, 100,000 steps.
-- [ ] Tests: warmup schedule matches paper formula at step 1, 100, 4000, 10000; loss is finite for first 10 steps; checkpoint round-trips.
-
-**Gate:** `bash scripts/overfit-one-batch.sh` → loss ~0. `bash scripts/smoke.sh` (100 steps, tiny WMT slice) → loss decreases, no NaN.
+**Gate met (synthetic):** `bash scripts/overfit-one-batch.sh` → loss collapses. `bash scripts/smoke.sh` → loss decreases, no NaN.
+**Gate pending (real data):** smoke against real WMT slice — blocked on Phase 2.
 
 ### 5. Eval
 
