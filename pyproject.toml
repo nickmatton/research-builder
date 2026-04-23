@@ -1,40 +1,21 @@
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [project]
-name = "research-builder"
-version = "0.1.0"
-description = "Multi-agent harness for reproducing research paper results"
+name = "research-builder-toolkit"
+version = "0.2.0"
+description = "Paper reproduction template + helper scripts for Claude Code"
 requires-python = ">=3.11"
 dependencies = [
-    "claude-agent-sdk>=0.1.0",
-    "pydantic>=2.0",
-    "pyyaml>=6.0",
+    # paper-template/scripts/extract-paper-text.py
     "pdfplumber>=0.11",
-    "click>=8.0",
-    "prompt-toolkit>=3.0",
-    "python-dotenv>=1.0",
-    "httpx>=0.27",
-    "textual>=0.79",
-    "rich>=13.7",
+    # paper-template/scripts/compare-claims.py
+    "pyyaml>=6.0",
+    # Per-paper src/ + tests (e.g. papers/attention-is-all-you-need/)
     "torch>=2.0",
-    "sentence-transformers>=3.0",
-]
-
-[project.optional-dependencies]
-dev = [
     "pytest>=8.0",
-    "pytest-asyncio>=0.24",
 ]
 
-[project.scripts]
-research-builder = "research_builder.main:cli"
-research-builder-viewer = "research_builder.viewer.cli:main"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/research_builder"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
+# Note: lookup-citation.py uses the standard library urllib — no httpx needed.
+# The original 9.5k LoC harness lived under src/research_builder/ and is now
+# preserved at .archive/research-builder-v1/. Its dependencies (claude-agent-sdk,
+# textual, prompt-toolkit, sentence-transformers, click, rich, etc.) are NOT
+# part of this toolkit env; checkout an older commit (e20cd93 or 90076ce) to
+# resurrect them if needed.

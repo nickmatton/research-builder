@@ -25,9 +25,11 @@ report/
 canonical_spec.bak.*/
 phases.bak.*/
 
-# Archived / large scratch (e.g. 4GB .archive/) — but keep the README tracked
+# Archived / large scratch (e.g. 4GB .archive/ run snapshots) — but keep
+# the README + the frozen-but-tracked v1 harness source visible.
 .archive/*
 !.archive/README.md
+!.archive/research-builder-v1/
 
 # Per-paper scratch dirs (pre-migration; replaced by papers/<slug>/ later)
 attentionisallyouneed/

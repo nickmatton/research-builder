@@ -10,9 +10,9 @@ It is gitignored — these are reference snapshots, not part of the toolkit. The
 
 ## What's here
 
-- **`<YYYYMMDD-HHMMSS>/`** — one directory per harness run, timestamped. Each contains the harness's full output: `canonical_spec/`, `phases/<phase_id>/<try_num>/{src,outputs}/`, `logs/{events.jsonl, postmortems/, spec_amendments/, claims/}`, `report/reproduction_report.md`.
+- **`research-builder-v1/`** — the original 9.5k LoC harness source (~57 modules, 137 tests). Moved here from the top-level `src/` and `tests/` in [Phase 4](../MIGRATION_PLAN.md). Tracked in git (the only `.archive/` subtree that is — the rest is gitignored). Browseable as proof of the complex version we built first. Not installed by the toolkit's `pyproject.toml` anymore — to actually run it, check out commit `90076ce` or earlier.
 
-- **(Phase 4, future)** `research-builder-v1/` — the harness source code itself, moved out of `src/research_builder/` once `papers/attention-is-all-you-need/` validates the new template end-to-end.
+- **`<YYYYMMDD-HHMMSS>/`** — gitignored. One directory per harness run, timestamped. Each contains the harness's full output: `canonical_spec/`, `phases/<phase_id>/<try_num>/{src,outputs}/`, `logs/{events.jsonl, postmortems/, spec_amendments/, claims/}`, `report/reproduction_report.md`.
 
 ## Notes
 

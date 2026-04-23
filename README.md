@@ -80,7 +80,7 @@ Before this template existed, `research-builder` was a 9.5k LoC custom agent har
 
 It worked. It was also a small platform to maintain — every Claude Agent SDK upgrade meant re-validating ~9.5k LoC of orchestration, and every feature Claude Code shipped (plan mode, hooks, sub-agents, compaction, memory, `/loop`, scheduled triggers) made the custom orchestration a little less load-bearing.
 
-The harness source still lives at `src/research_builder/` (committed at [`e20cd93`](../../commit/e20cd93)). It will move to `.archive/research-builder-v1/` once an end-to-end reproduction in `papers/attention-is-all-you-need/` validates the lighter-weight template stack. The methodology — claims ledger schema, verification ladder, post-mortem template, the structured `report_result` artifact format — was extracted before the rewrite ([Phase 1 commit](../../commit/e6f5c3d)) and now lives in `paper-template/.claude/skills/`.
+The harness source is preserved at [`.archive/research-builder-v1/`](.archive/research-builder-v1/) — frozen but tracked, browseable on GitHub as proof-of-concept. The methodology — claims ledger schema, verification ladder, post-mortem template, structured result artifact format — was extracted before the move ([Phase 1 commit](../../commit/e6f5c3d)) and now lives in `paper-template/.claude/skills/`. The toolkit's `pyproject.toml` no longer carries the harness's dependencies (claude-agent-sdk, textual, prompt-toolkit, sentence-transformers, click, rich, …) — checkout commit [`90076ce`](../../commit/90076ce) or earlier to resurrect that env.
 
 The harness was the right thing to build first. It validated the methodology end-to-end. Then deleting most of it was the right next move.
 
@@ -96,6 +96,8 @@ The harness was the right thing to build first. It validated the methodology end
 | [`7d8e083`](../../commit/7d8e083) | Phase 3 (partial): scaffold attention-is-all-you-need + README rewrite | +1901 |
 | [`bb3af4b`](../../commit/bb3af4b) | Phase 3: real implementation plan for the paper | +59 |
 | [`1ad9c17`](../../commit/1ad9c17) | Phase 3: real PyTorch transformer + verification ladder green through smoke | +765 |
+| [`d6d96e7`](../../commit/d6d96e7) | CI workflow + bin/new-paper scaffolder | +136 |
+| _(this commit)_ | Phase 4: archive the original harness | rename 70 files |
 
 See [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md) for the phase plan, gates, and what's next.
 
@@ -122,8 +124,11 @@ The per-paper README (`paper-template/README.md`) walks through the rest of the 
 
 ## Tests
 
+The current architecture's tests live with the worked example:
+
 ```bash
-uv run pytest tests/ -v
+cd papers/attention-is-all-you-need
+uv run --project ../.. pytest tests/ -v
 ```
 
-Tests cover the original harness's models, storage, dependency graph, failure handling, and execution loop. The new template's `compare-claims.py` is smoke-tested in `papers/attention-is-all-you-need/` against real claims from `notes/claims.yaml`. Tests for the harness will move with the source to `.archive/` in Phase 4.
+15 unit tests over the transformer (attention shapes + mask semantics, PE formula, model forward, gradient flow). CI runs them + an `--overfit-one-batch` assertion (final loss must be < 0.05 with LS=0) on every push. The original harness's 137 tests are preserved at `.archive/research-builder-v1/tests/` but no longer run in CI.
