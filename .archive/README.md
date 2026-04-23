@@ -10,7 +10,12 @@ It is gitignored — these are reference snapshots, not part of the toolkit. The
 
 ## What's here
 
-- **`research-builder-v1/`** — the original 9.5k LoC harness source (~57 modules, 137 tests). Moved here from the top-level `src/` and `tests/` in [Phase 4](../MIGRATION_PLAN.md). Tracked in git (the only `.archive/` subtree that is — the rest is gitignored). Browseable as proof of the complex version we built first. Not installed by the toolkit's `pyproject.toml` anymore — to actually run it, check out commit `90076ce` or earlier.
+- **`research-builder-v1/`** — the original 9.5k LoC harness, moved here from top-level in [Phase 4](../MIGRATION_PLAN.md). Tracked in git (the only `.archive/` subtree that is). Browseable as proof of the complex version we built first. Not installed by the toolkit's `pyproject.toml` anymore — to actually run it, check out commit `90076ce` or earlier.
+  - `src/research_builder/` — the harness source (57 modules: orchestrator, sub_agent, models, storage, viewer, cloud, literature, rag, llm).
+  - `tests/` — 137 unit + e2e tests for the harness.
+  - `examples/attention_run/` — a real harness run on Attention Is All You Need: `canonical_spec/`, per-phase code under `phases/<id>/<try>/{src,outputs}/`, and the final `report/reproduction_report.md`. Concrete proof the harness produced working transformer code end-to-end (`attention.py`, `transformer.py`, `feed_forward.py`, `positional_encoding.py`).
+  - `paper/` — original PDFs the harness was tested against (Attention Is All You Need + a small synthetic test paper).
+  - `spec_v4.md` — internal design spec for the harness, the document the orchestrator + sub-agent code traces back to.
 
 - **`<YYYYMMDD-HHMMSS>/`** — gitignored. One directory per harness run, timestamped. Each contains the harness's full output: `canonical_spec/`, `phases/<phase_id>/<try_num>/{src,outputs}/`, `logs/{events.jsonl, postmortems/, spec_amendments/, claims/}`, `report/reproduction_report.md`.
 
