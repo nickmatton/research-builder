@@ -1,15 +1,14 @@
 # Claims Ledger
 #
 # Canonical machine-readable source for the paper's headline numerical claims.
-# The `claims` MCP server reads/writes this file. The `compare-to-paper` skill
-# verifies runs against it.
+# Edited directly with Read/Write. Verified against runs by
+# `scripts/compare-claims.py`.
 #
 # Status rubric (see .claude/skills/compare-to-paper.md):
 #   verified | close | missed | exceeded | not_checked
 #
-# When adding a claim by hand, match the structure below. Or use the MCP tool
-# `claims.add_claim(...)`. Stable snake_case claim_ids — renaming breaks
-# comparisons across runs in notes/journal.md.
+# Stable snake_case claim_ids — renaming breaks comparisons across runs in
+# notes/journal.md.
 
 claims:
   - claim_id: table2_cifar10_top1

@@ -10,7 +10,7 @@ Run the full reproduction pipeline for this paper and log the result.
 
 2. **Run**: Execute `bash scripts/reproduce.sh ${1:-configs/full.yaml}`. Stream output to the user as it runs.
 
-3. **Verify**: Once `runs/<run-id>/metrics.json` is written, call `claims.verify_run(metrics=<the dict>)`. Save the resulting markdown table to `runs/<run-id>/claims-report.md`.
+3. **Verify**: Once `runs/<run-id>/metrics.json` is written, run `python scripts/compare-claims.py runs/<run-id>/metrics.json | tee runs/<run-id>/claims-report.md`. The script's last line is `SUMMARY: {...}` — parse it for the per-status counts. Exit code 1 means at least one `missed` or `exceeded`.
 
 4. **Journal**: Append a new run block to `notes/journal.md` using the template at the top of that file. Include:
    - run-id (matches the directory name)

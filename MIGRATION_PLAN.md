@@ -15,47 +15,58 @@
 
 ---
 
+## Architecture decision: built-in tools over MCP
+
+**2026-04-23.** Initial Phase 2 built three MCP servers (paper, arxiv, claims). On reflection: MCP earns its keep when there are many tools, multiple clients, or stateful sessions. For our 3-server / ~10-tool case used inside one harness (Claude Code), the wins are marginal — and the costs are real: a `mcp` dep, ~40 transitive packages, subprocess management, stdout-discipline risk, and a per-paper `uv pip install -e <toolkit>` step that breaks portability.
+
+Pivot: drop MCP, lean on Claude Code's built-ins (Read, Write, Bash, Grep) plus three small Python scripts:
+
+- **paper_reader → `scripts/extract-paper-text.py`** runs once, dumps `paper/paper.txt` with `--- Page N ---` markers. Claude reads/greps it with built-ins.
+- **arxiv → `scripts/lookup-citation.py`** thin Semantic Scholar wrapper handling the API key. Called via Bash, JSON to stdout.
+- **claims → `scripts/compare-claims.py`** + direct Read/Write on `notes/claims.yaml`. Script does verification + markdown table; YAML is plain-text edited.
+
+Net: ~410 LoC of MCP + 40 transitive deps → ~200 LoC of scripts + zero new deps. **Paper repos are now truly portable** — no toolkit install, just `cp -r paper-template/`, drop the PDF, go.
+
 ## End-state architecture
 
 ```
-research-builder/                  # this repo, becomes the *toolkit*
-├── README.md                      # explains: clone paper-template/, point at PDF, go
-├── paper-template/                # cookiecutter-style template, copied per paper
-│   ├── CLAUDE.md.j2               # reproduction spec scaffold
-│   ├── notes/{claims,journal,plan}.md
-│   ├── scripts/{smoke,reproduce,overfit-one-batch}.sh
+research-builder/                  # this repo, the template + methodology source
+├── README.md
+├── MIGRATION_PLAN.md              # this file
+├── paper-template/                # copied per paper
+│   ├── CLAUDE.md
+│   ├── README.md
+│   ├── .gitignore
+│   ├── .claude/
+│   │   ├── skills/                # verification-ladder, post-mortem, compare-to-paper
+│   │   └── commands/              # /reproduce, /compare, /verify, /post-mortem
+│   ├── notes/{claims.yaml, plan.md, journal.md, post-mortems/}
+│   ├── scripts/
+│   │   ├── extract-paper-text.py  # PDF → paper.txt (one-time)
+│   │   ├── compare-claims.py      # verify run metrics vs claims ledger
+│   │   ├── lookup-citation.py     # Semantic Scholar wrapper
+│   │   ├── smoke.sh
+│   │   ├── overfit-one-batch.sh
+│   │   └── reproduce.sh
 │   ├── configs/.gitkeep
 │   ├── src/.gitkeep
-│   ├── tests/.gitkeep
-│   └── .gitignore                 # data/, runs/
-├── mcp/                           # MCP servers (Python, ~500 LoC total)
-│   ├── arxiv_server.py            # paper search/fetch
-│   ├── paper_reader_server.py     # PDF section extraction (port from sub_agent/tools.py)
-│   └── claims_server.py           # claims ledger CRUD against notes/claims.md
-├── skills/                        # shared across all paper repos
-│   ├── verification-ladder.md     # the unit→overfit→smoke→short→full ladder
-│   ├── post-mortem.md             # template for failed-run analysis
-│   ├── compare-to-paper.md        # diff reproduced metrics vs claims
-│   └── pytorch-training-loop.md   # opinionated training scaffold
-├── commands/                      # slash commands (project-scoped, ship in template)
-│   ├── reproduce.md               # full run
-│   ├── compare.md                 # invokes compare-to-paper skill
-│   ├── verify.md                  # runs the next gate in the ladder
-│   └── post-mortem.md             # generate post-mortem for last failed run
-├── hooks/                         # auto-journal on Stop, etc.
-│   └── on-stop-journal.sh
-└── .archive/research-builder-v1/  # the old harness, frozen for reference
+│   └── tests/.gitkeep
+└── .archive/research-builder-v1/  # the old harness, frozen for reference (Phase 4)
 ```
 
 A new paper:
 ```
-papers/<paper-slug>/               # generated from paper-template
-├── CLAUDE.md                      # spec, filled in by /scaffold-from-pdf
-├── paper/<paper>.pdf
-├── notes/{claims,journal,plan}.md
-├── src/, configs/, tests/, scripts/
+papers/<paper-slug>/               # cp -r paper-template/
+├── CLAUDE.md                      # filled in first
+├── paper/{paper.pdf, paper.txt}   # PDF dropped in, text auto-extracted
+├── notes/{claims.yaml, plan.md, journal.md, post-mortems/}
+├── .claude/{skills,commands}/
+├── scripts/
+├── src/, tests/, configs/
 └── data/, runs/                   # gitignored
 ```
+
+No MCP servers. No `.mcp.json`. No toolkit install required in the paper repo.
 
 ---
 

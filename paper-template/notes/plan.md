@@ -7,11 +7,12 @@ Filled in once, after the first plan-mode session in this repo. Updated as you d
 Each phase has explicit success criteria. Don't move to the next phase until the previous one's gate is green. (See `.claude/skills/verification-ladder.md`.)
 
 ### 1. Paper analysis & claims extraction
+- [ ] `python scripts/extract-paper-text.py` to produce `paper/paper.txt`.
 - [ ] Read paper end-to-end. Update `CLAUDE.md` Summary + Hyperparameters.
 - [ ] Populate `notes/claims.yaml` with 3–10 headline claims.
-- [ ] Look up any opaque cited methods via the `arxiv` MCP server.
+- [ ] Look up any opaque cited methods with `python scripts/lookup-citation.py "<title>"`.
 
-**Gate:** `claims.list_claims()` returns the headline list. CLAUDE.md is no longer mostly placeholders.
+**Gate:** `notes/claims.yaml` has headline claims. `CLAUDE.md` is no longer mostly placeholders.
 
 ### 2. Scaffolding & data pipeline
 - [ ] Project skeleton (`src/data.py`, `src/model.py`, `src/train.py`, `src/eval.py`).
@@ -40,7 +41,7 @@ Each phase has explicit success criteria. Don't move to the next phase until the
 - [ ] `bash scripts/smoke.sh` runs end-to-end.
 - [ ] Short training run loss curve roughly matches paper Figure <Y>.
 - [ ] Full reproduction run.
-- [ ] `claims.verify_run(...)` returns mostly verified/close.
+- [ ] `python scripts/compare-claims.py runs/<id>/metrics.json` returns mostly verified/close.
 
 **Gate:** Top headline claim is verified or close.
 

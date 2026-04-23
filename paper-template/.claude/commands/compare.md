@@ -8,9 +8,9 @@ Compare a completed run's metrics against `notes/claims.yaml`.
 
 1. **Locate the run**: If the user supplied a run-id (`$1`), use `runs/$1/metrics.json`. Otherwise pick the most recent `runs/*/metrics.json`.
 
-2. **Verify**: Read `metrics.json`, call `claims.verify_run(metrics=<dict>)`. Print the returned markdown `table` and `summary` to the user.
+2. **Verify**: Run `python scripts/compare-claims.py runs/<run-id>/metrics.json | tee runs/<run-id>/claims-report.md`. The script prints the markdown table to stdout and writes it to `claims-report.md` via tee.
 
-3. **Save**: Write the table + summary to `runs/<run-id>/claims-report.md`.
+3. **Parse**: The last line of stdout is `SUMMARY: {...}` JSON — read it for per-status counts.
 
 4. **Read the rubric**: status meanings and the "exceeded = red flag" rule come from `.claude/skills/compare-to-paper.md`. Apply them — don't paper over `exceeded` results.
 
