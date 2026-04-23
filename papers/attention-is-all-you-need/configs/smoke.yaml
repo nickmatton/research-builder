@@ -1,0 +1,13 @@
+# Smoke + overfit-one-batch config — tiny model on synthetic data.
+# Real attention-is-all-you-need base config will live in configs/base.yaml
+# (Phase 4 of notes/plan.md), once the WMT loader is in.
+
+d_model: 64
+num_heads: 4
+num_layers: 2
+d_ff: 256
+vocab_size: 100
+batch_size: 4
+src_len: 6
+tgt_len: 6
+warmup: 400

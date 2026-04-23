@@ -4,22 +4,25 @@
 # Rung 3 of the verification ladder. Cheap. Run before any longer training.
 set -euo pipefail
 
-CONFIG="${1:-configs/smoke.yaml}"
+MAX_STEPS="${1:-1000}"
 RUN_ID="overfit-$(date +%Y%m%d-%H%M%S)"
 RUN_DIR="runs/${RUN_ID}"
 mkdir -p "${RUN_DIR}"
 
-echo "[overfit] config=${CONFIG} run_dir=${RUN_DIR}"
+GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+echo "${GIT_SHA}" > "${RUN_DIR}/git_sha.txt"
 
-# TODO: replace with your real entry point. The point is to repeatedly train
-# on a single batch — your training script needs to support that mode.
-uv run python -m src.train \
-    --config "${CONFIG}" \
+echo "[overfit] max_steps=${MAX_STEPS} run_dir=${RUN_DIR} git=${GIT_SHA}"
+
+# Toolkit env (parent toolkit has torch + pytest installed). Per-paper repos
+# would normally use their own .venv; we share the toolkit env for the demo.
+uv run --project /Users/nickmatton/repos/research-builder \
+    python -m src.train \
     --overfit-one-batch \
-    --max-steps 500 \
+    --max-steps "${MAX_STEPS}" \
     --output-dir "${RUN_DIR}" \
     2>&1 | tee "${RUN_DIR}/train.log"
 
-# Sanity-check the final loss. Adjust threshold per task.
-LOSS=$(grep -E "^step 500" "${RUN_DIR}/train.log" | awk '{print $NF}' || echo "?")
-echo "[overfit] final loss = ${LOSS}  (should be ~0)"
+# Verdict — loss should be ~0 (well under the random baseline of log(vocab_size)).
+FINAL_LOSS=$(python -c "import json; print(json.load(open('${RUN_DIR}/metrics.json'))['final_loss'])")
+echo "[overfit] final loss = ${FINAL_LOSS}  (should be ≪ log(100)=4.6 for vocab=100; ideally < 0.5)"

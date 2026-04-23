@@ -41,15 +41,17 @@ Each paper is its own Claude Code project. The template ships with:
 
 ## Worked example
 
-`papers/attention-is-all-you-need/` is the worked example. As of this commit:
+`papers/attention-is-all-you-need/` is the worked example. As of this commit, **the verification ladder is green through smoke run on synthetic data**:
 
 - ✅ Scaffolded from `paper-template/`. PDF extracted to `paper/paper.txt` (15 pages).
-- ✅ `CLAUDE.md` populated from the paper: citation, hyperparameters from §3 + Table 3, datasets from §5.1, compute budget from §5.2.
-- ✅ `notes/claims.yaml` populated with 6 claims from Table 2 and §5.2.
-- ✅ `scripts/compare-claims.py` validated end-to-end on synthetic metrics — `verified`, `close`, and `not_checked` statuses all classify correctly.
-- ⏳ Implementation (`src/`) and full training run pending. The big-model claims (28.4, 41.8 BLEU) are likely out-of-budget without multi-GPU compute; the base-model reproduction (~12 GPU-h on P100, ~3–6 on A100) is the realistic target.
+- ✅ `CLAUDE.md` + `notes/claims.yaml` populated from the paper (6 headline claims from Table 2 + §5.2).
+- ✅ Real PyTorch implementation: `src/attention.py`, `src/positional.py`, `src/transformer.py`, `src/train.py` — paper-faithful (Adam β2=0.98, §5.3 warmup-then-decay LR, label smoothing ε=0.1, shared input/output embedding per §3.4 with √d_model scaling).
+- ✅ **15 unit tests pass** (shape, mask semantics, PE formula, gradient flow): `uv run pytest`.
+- ✅ **Overfit-one-batch**: loss → 0.0000 in ~250 steps with LS=0; → 0.78 with paper-faithful LS=0.1, which is exactly H(smoothed_dist) ≈ 0.77 — a label-smoothing artifact, not a model defect (verified by re-running with LS=0). See `notes/journal.md` for the analysis.
+- ✅ **Smoke run** (200 steps, fresh synthetic batches): pipeline executes end-to-end, no NaN, loss decreases.
+- ⏳ Real WMT 2014 EN-DE loader (Phase 2 of `notes/plan.md`) — pending. Then a base-model run on a single A100 (~3–6 GPU-h) attempts the headline `table2_base_en_de_bleu` claim. The big-model claims are explicitly out-of-budget without multi-GPU compute and will likely land as `not_checked`.
 
-See `papers/attention-is-all-you-need/CLAUDE.md` for the full spec and `notes/journal.md` for the run log.
+See `papers/attention-is-all-you-need/CLAUDE.md` for the full spec, `notes/plan.md` for the implementation plan, and `notes/journal.md` for the run log.
 
 ## Architecture decision: built-in tools over MCP
 
