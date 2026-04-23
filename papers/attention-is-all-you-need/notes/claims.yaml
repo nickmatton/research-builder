@@ -1,0 +1,92 @@
+# Claims Ledger — Attention Is All You Need (Vaswani et al., NeurIPS 2017)
+#
+# Headline numerical claims to reproduce. Edited directly with Read/Write.
+# Verified against runs by `scripts/compare-claims.py`.
+#
+# Status rubric (.claude/skills/compare-to-paper.md):
+#   verified | close | missed | exceeded | not_checked
+
+claims:
+  - claim_id: table2_big_en_de_bleu
+    metric: BLEU
+    value: 28.4
+    tolerance: 0.3
+    unit: ""
+    dataset: WMT 2014 EN-DE newstest2014
+    condition: "Transformer (big), beam=4, α=0.6, avg last 20 checkpoints"
+    source:
+      table: "Table 2"
+      page: 8
+      verbatim: "Transformer (big) ... 28.4"
+    phase: eval
+    notes: "Headline. Big model = ~3.5 GPU-days; likely out-of-budget for our reproduction."
+
+  - claim_id: table2_big_en_fr_bleu
+    metric: BLEU
+    value: 41.8
+    tolerance: 0.3
+    unit: ""
+    dataset: WMT 2014 EN-FR newstest2014
+    condition: "Transformer (big), P_drop=0.1, beam=4, α=0.6"
+    source:
+      table: "Table 2"
+      page: 8
+      verbatim: "Transformer (big) ... 41.8"
+    phase: eval
+    notes: "Single-model SOTA at publication. Big model — likely not_checked."
+
+  - claim_id: table2_base_en_de_bleu
+    metric: BLEU
+    value: 27.3
+    tolerance: 0.3
+    unit: ""
+    dataset: WMT 2014 EN-DE newstest2014
+    condition: "Transformer (base), beam=4, α=0.6, avg last 5 checkpoints"
+    source:
+      table: "Table 2"
+      page: 8
+      verbatim: "Transformer (base model) ... 27.3"
+    phase: eval
+    notes: "Realistic reproduction target — ~12 GPU-h on P100, ~3-6 GPU-h on A100."
+
+  - claim_id: table2_base_en_fr_bleu
+    metric: BLEU
+    value: 38.1
+    tolerance: 0.3
+    unit: ""
+    dataset: WMT 2014 EN-FR newstest2014
+    condition: "Transformer (base), beam=4, α=0.6"
+    source:
+      table: "Table 2"
+      page: 8
+      verbatim: "Transformer (base model) ... 38.1"
+    phase: eval
+    notes: ""
+
+  - claim_id: train_steps_big
+    metric: training steps
+    value: 300000
+    tolerance: 0
+    unit: steps
+    dataset: WMT 2014 EN-DE
+    condition: "Transformer (big)"
+    source:
+      section: "§5.2"
+      page: 7
+      verbatim: "big models were trained for 300,000 steps (3.5 days)"
+    phase: training
+    notes: "Procedural — verifies our training loop ran the right number of steps."
+
+  - claim_id: train_steps_base
+    metric: training steps
+    value: 100000
+    tolerance: 0
+    unit: steps
+    dataset: WMT 2014 EN-DE
+    condition: "Transformer (base)"
+    source:
+      section: "§5.2"
+      page: 7
+      verbatim: "trained the base models for a total of 100,000 steps or 12 hours"
+    phase: training
+    notes: ""

@@ -25,8 +25,9 @@ report/
 canonical_spec.bak.*/
 phases.bak.*/
 
-# Archived / large scratch (e.g. 4GB .archive/)
-.archive/
+# Archived / large scratch (e.g. 4GB .archive/) — but keep the README tracked
+.archive/*
+!.archive/README.md
 
 # Per-paper scratch dirs (pre-migration; replaced by papers/<slug>/ later)
 attentionisallyouneed/

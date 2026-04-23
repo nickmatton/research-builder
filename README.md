@@ -1,192 +1,118 @@
 # research-builder
 
-A multi-agent harness that reproduces the code and results from a research paper. Give it a PDF, get back working code and a reproduction report.
-
-## How it works
-
-An **Orchestrator** reads the paper, produces a canonical spec, decomposes the work into phases, and spawns **Sub-Agents** — one per phase. Each sub-agent writes code, writes tests, runs them, debugs failures, and reports structured results back. The orchestrator manages dependencies, retries, and cross-phase integration.
+A toolkit for reproducing research-paper results using Claude Code. One paper = one repo, scaffolded from a template, driven by an opinionated methodology: **claims-first, verification-ladder, post-mortem on every failure.**
 
 ```
-                          ┌─────────────────────────────┐
-                          │       Research Paper         │
-                          │         (PDF)                │
-                          └──────────────┬──────────────┘
-                                         │
-                                         ▼
-                          ┌─────────────────────────────┐
-                          │     Orchestrator Agent       │
-                          │                             │
-                          │  1. Ingest paper            │
-                          │  2. Draft canonical spec    │
-                          │     (spec.md + state.yaml)  │
-                          │  3. Build dependency graph  │
-                          │  4. Run execution loop      │
-                          └──────────────┬──────────────┘
-                                         │
-                    ┌────────────────────┼────────────────────┐
-                    │                    │                    │
-                    ▼                    ▼                    ▼
-          ┌─────────────────┐  ┌─────────────────┐          ...
-          │  Sub-Agent:     │  │  Sub-Agent:     │
-          │  Data           │  │  Architecture   │
-          │                 │  │                 │
-          │  Tools:         │  │  Tools:         │
-          │  Read/Write/    │  │  Read/Write/    │
-          │  Edit/Bash/     │  │  Edit/Bash/     │
-          │  Paper/Report   │  │  Paper/Report   │
-          └────────┬────────┘  └────────┬────────┘
-                   │                    │
-                   ▼                    ▼
-          ┌─────────────────┐  ┌─────────────────┐
-          │  SubAgentResult │  │  SubAgentResult │
-          │  - status       │  │  - status       │
-          │  - outputs      │  │  - outputs      │
-          │  - test_report  │  │  - test_report  │
-          └────────┬────────┘  └────────┬────────┘
-                   │                    │
-                   └────────┬───────────┘
-                            ▼
-                  ┌───────────────────┐
-                  │ Orchestrator:     │
-                  │ Acceptance Review │
-                  │ → Accept / Retry  │
-                  └─────────┬─────────┘
-                            │
-                            ▼
-             ┌──────────────────────────┐
-             │  Next phase or complete  │
-             └──────────────────────────┘
+research-builder/
+├── paper-template/             # cp -r per paper; self-contained
+│   ├── CLAUDE.md               # reproduction spec scaffold
+│   ├── notes/{claims.yaml, plan.md, journal.md}
+│   ├── .claude/skills/         # verification-ladder, post-mortem, compare-to-paper
+│   ├── .claude/commands/       # /reproduce, /compare, /verify, /post-mortem
+│   └── scripts/                # extract-paper-text, compare-claims, lookup-citation, smoke/overfit/reproduce
+└── papers/
+    └── attention-is-all-you-need/   # worked example, scaffolded from paper-template/
 ```
 
-### Execution flow
+To start a new paper: `cp -r paper-template/ ~/papers/<slug>`, drop the PDF, run `extract-paper-text.py`, open Claude Code. Three Python scripts (~200 LoC) replace what was originally a 9.5k LoC custom agent harness. **No MCP servers. No protocol layer. No toolkit install in the paper repo.**
 
-```
-Time ──────────────────────────────────────────────────────────────────►
+## How it works (current architecture)
 
-[Orchestrator reads paper, drafts canonical spec]
-        │
-        ├──► Sub-Agent(data) ──────► success ──► accept ──►─┐
-        │                                                    │
-        ├──► Sub-Agent(architecture) ──► success ──► accept ─┤
-        │                                                    │
-        │    (data + architecture complete)                   │
-        │    ◄───────────────────────────────────────────────┘
-        │
-        ├──► Sub-Agent(training) ──────► success ──► accept ──►─┐
-        │                                                       │
-        ├──► Sub-Agent(eval) ──────────► success ──► accept ──►─┤
-        │                                                       │
-        └──► Sub-Agent(results) ───────► success ──► accept     │
-                                                       │        │
-                                              [Reproduction Report]
-```
+Each paper is its own Claude Code project. The template ships with:
 
-### Failure handling
+- **`CLAUDE.md`** — the reproduction spec. Citation, summary, headline claims (with table/page refs), hyperparameters with paper-section references, dataset locations, compute budget, commands. Claude reads it on every session. Discrepancies with the paper get resolved *here*, not in chat.
 
-Sub-agents have an internal debug budget (default 10 attempts). If a sub-agent can't fix a failure, the orchestrator retries with a fresh sub-agent (up to 3 retries). Spec-issue returns — where the sub-agent identifies a problem in the spec rather than its own code — don't count against the retry budget.
+- **`notes/claims.yaml`** — machine-readable ledger of the paper's headline numerical claims (e.g. "BLEU 28.4 on WMT14 EN-DE — Table 2, p.8"). Verified after each run by `scripts/compare-claims.py`.
 
-## Architecture
+- **`notes/journal.md`** — append-only log. One row per run: git SHA, config hash, hardware, key metrics, claims-verification summary, one-sentence note. Survives sessions; survives context resets.
 
-```
-src/research_builder/
-├── main.py                          # CLI entry point
-├── config.py                        # Run configuration
-│
-├── models/                          # Pydantic data models
-│   ├── spec.py                      #   SpecState, PhaseState, Artifact, Revision
-│   ├── results.py                   #   SubAgentResult, TestReport
-│   └── context.py                   #   SubSpec, RetryContext, RunState
-│
-├── orchestrator/                    # Orchestrator (Python control plane)
-│   ├── agent.py                     #   LLM reasoning: spec creation, acceptance review
-│   ├── loop.py                      #   Execution loop: dispatch → review → retry
-│   ├── spec_manager.py              #   Spec state, amendment, sub-spec extraction
-│   ├── dependency.py                #   Dependency graph: runnable, upstream/downstream
-│   └── failure.py                   #   Retry budgets, spec-issue exemption
-│
-├── sub_agent/                       # Sub-agents (Claude Agent SDK sessions)
-│   ├── agent.py                     #   SubAgent: prompt → query() → SubAgentResult
-│   ├── prompts.py                   #   System prompts per phase type
-│   └── tools.py                     #   Custom MCP tools: paper access + report_result
-│
-├── storage/                         # File system management
-│   ├── workspace.py                 #   Directory layout, attempt isolation
-│   └── spec_store.py                #   spec.md + state.yaml + revision_log.yaml
-│
-└── llm/
-    └── paper.py                     # PDF page-range extraction
-```
+- **`.claude/skills/`** — the methodology, encoded as durable patterns:
+  - `verification-ladder.md` — unit → overfit-one-batch → smoke → short → full. Cheapest gate first. Don't skip rungs.
+  - `post-mortem.md` — one focused hypothesis per failed run. Spec-issue vs implementation-issue classification.
+  - `compare-to-paper.md` — `verified | close | missed | exceeded | not_checked` rubric. **Exceeded = red flag** (data leak, wrong split, metric mismatch), not a win.
 
-### Key design decisions
+- **`.claude/commands/`** — slash commands wiring it together: `/reproduce`, `/compare`, `/verify`, `/post-mortem`.
 
-- **Canonical spec = markdown + YAML.** The spec is a rich markdown document (`spec.md`) authored by the LLM, paired with a lightweight machine-readable state file (`state.yaml`) for the Python control plane.
-- **`report_result` terminal tool.** Sub-agents call a custom MCP tool to write their structured result to a JSON file. The parent reads it back after the session ends — clean structured output without parsing free text.
-- **Per-attempt isolation.** Each sub-agent attempt writes to `phases/<phase_id>/<try_num>/`. Prior attempts are preserved for diagnostics and retry context.
-- **LLM reasons, Python controls.** The orchestrator LLM makes judgment calls (spec drafting, acceptance review). Python handles the execution loop, dependency resolution, retry counting, and state management.
+- **`scripts/`** — three small Python helpers and three shell scaffolds:
+  - `extract-paper-text.py` — one-shot PDF→text with `--- Page N ---` markers (pdfplumber).
+  - `compare-claims.py` — verify run metrics against `claims.yaml`, emit markdown table.
+  - `lookup-citation.py` — Semantic Scholar wrapper handling the API key.
+  - `smoke.sh`, `overfit-one-batch.sh`, `reproduce.sh` — verification-ladder rungs.
 
-## Installation
+## Worked example
+
+`papers/attention-is-all-you-need/` is the worked example. As of this commit:
+
+- ✅ Scaffolded from `paper-template/`. PDF extracted to `paper/paper.txt` (15 pages).
+- ✅ `CLAUDE.md` populated from the paper: citation, hyperparameters from §3 + Table 3, datasets from §5.1, compute budget from §5.2.
+- ✅ `notes/claims.yaml` populated with 6 claims from Table 2 and §5.2.
+- ✅ `scripts/compare-claims.py` validated end-to-end on synthetic metrics — `verified`, `close`, and `not_checked` statuses all classify correctly.
+- ⏳ Implementation (`src/`) and full training run pending. The big-model claims (28.4, 41.8 BLEU) are likely out-of-budget without multi-GPU compute; the base-model reproduction (~12 GPU-h on P100, ~3–6 on A100) is the realistic target.
+
+See `papers/attention-is-all-you-need/CLAUDE.md` for the full spec and `notes/journal.md` for the run log.
+
+## Architecture decision: built-in tools over MCP
+
+The first cut of the toolkit ([Phase 2 commit](../../commit/8b96670)) used three MCP servers — `paper`, `arxiv`, `claims` — wired in via `.mcp.json`. They worked. They were also overkill for a 3-server / ~10-tool toolkit used inside a single harness (Claude Code).
+
+The pivot ([Phase 2.5](../../commit/d2014ca)) replaces them with three small Python scripts called via Bash, plus direct Read/Write/Grep on `paper.txt` and `claims.yaml`. Net change: ~410 LoC of MCP servers + 40 transitive deps → ~200 LoC of self-contained scripts and zero new deps.
+
+Why:
+- **Tool-discovery / typed-schema / persistent-process wins are marginal** when there are only ~10 tools used by one client.
+- **Costs are real**: a `mcp` dependency, ~40 transitive packages, subprocess management, stdout-discipline risk, and a per-paper `uv pip install -e <toolkit>` step that breaks portability.
+- **Built-in tools are more native** to Claude Code than any third-party protocol. A Read on `paper/paper.txt` is faster, simpler, more debuggable than a JSON-RPC roundtrip.
+
+Full reasoning, including a full ratings comparison and the discarded MCP implementation, is in [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md) § "Architecture decision: built-in tools over MCP."
+
+## The original harness
+
+Before this template existed, `research-builder` was a 9.5k LoC custom agent harness:
+
+- **Orchestrator** (Python) read the paper via Claude Agent SDK, drafted a canonical spec (`spec.md` + `state.yaml`), built a phase dependency graph, and ran an execution loop.
+- **Sub-agents** (one per phase: data, architecture, training, eval, results) each spawned a Claude Agent SDK session with custom MCP tools (`read_paper_section`, `lookup_citation`, `report_result`).
+- **Failure handling**: per-phase retry budgets, spec-issue vs implementation-issue classification, LLM-driven post-mortems, structured spec amendments.
+- **TUI viewer** (Textual) for live monitoring: phase status, file lifecycle, chat pane.
+- **Cloud GPU provisioning** (Lambda Labs) with per-run spend caps.
+
+It worked. It was also a small platform to maintain — every Claude Agent SDK upgrade meant re-validating ~9.5k LoC of orchestration, and every feature Claude Code shipped (plan mode, hooks, sub-agents, compaction, memory, `/loop`, scheduled triggers) made the custom orchestration a little less load-bearing.
+
+The harness source still lives at `src/research_builder/` (committed at [`e20cd93`](../../commit/e20cd93)). It will move to `.archive/research-builder-v1/` once an end-to-end reproduction in `papers/attention-is-all-you-need/` validates the lighter-weight template stack. The methodology — claims ledger schema, verification ladder, post-mortem template, the structured `report_result` artifact format — was extracted before the rewrite ([Phase 1 commit](../../commit/e6f5c3d)) and now lives in `paper-template/.claude/skills/`.
+
+The harness was the right thing to build first. It validated the methodology end-to-end. Then deleting most of it was the right next move.
+
+## Migration history
+
+| Commit | Phase | Lines |
+|---|---|---|
+| [`e20cd93`](../../commit/e20cd93) | WIP checkpoint of the original harness | +9797 |
+| [`99294c6`](../../commit/99294c6) | Migration plan committed | +193 |
+| [`e6f5c3d`](../../commit/e6f5c3d) | Phase 1: extract methodology to skills + templates | +456 |
+| [`8b96670`](../../commit/8b96670) | Phase 2: MCP servers + paper template | +830 |
+| [`d2014ca`](../../commit/d2014ca) | Phase 2.5: drop MCP, switch to built-in tools | -249 (net) |
+
+See [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md) for the phase plan, gates, and what's next.
+
+## Use the template
 
 ```bash
 git clone https://github.com/nickmatton/research-builder.git
-cd research-builder
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+cp -r research-builder/paper-template ~/papers/<paper-slug>
+cd ~/papers/<paper-slug>
+
+mkdir -p paper && cp /path/to/paper.pdf paper/paper.pdf
+uv pip install pdfplumber pyyaml          # only deps for the helper scripts
+python scripts/extract-paper-text.py      # → paper/paper.txt
+
+claude .                                  # open Claude Code
+# First conversation: "read paper/paper.txt, fill in CLAUDE.md and notes/claims.yaml"
 ```
 
-Requires an authenticated [Claude Code](https://claude.ai/code) session (the harness uses the Claude Agent SDK, which runs on your Claude subscription).
-
-## Usage
-
-```bash
-research-builder paper.pdf -o output/
-```
-
-Options:
-```
--o, --output PATH             Output directory (default: current directory)
--m, --model TEXT              Claude model to use (default: claude-opus-4-6)
---max-retries INTEGER         Max orchestrator retries per phase (default: 3)
---max-debug-attempts INTEGER  Max debug attempts per sub-agent (default: 10)
--v, --verbose                 Enable verbose logging
-```
-
-### Output structure
-
-```
-output/
-├── canonical_spec/
-│   ├── spec.md                # LLM-authored interpretation of the paper
-│   ├── state.yaml             # Phase statuses, dependency graph, artifact paths
-│   └── revision_log.yaml      # Append-only event log
-├── phases/
-│   ├── data/1/
-│   │   ├── src/               # Generated code + tests
-│   │   └── outputs/           # Dataset artifacts
-│   ├── architecture/1/
-│   ├── training/1/
-│   ├── eval/1/
-│   └── results/1/
-│       └── outputs/
-│           └── reproduction_report.md
-└── report/
-    └── reproduction_report.md # Final deliverable
-```
-
-## Example
-
-See [`examples/test_paper_run/`](examples/test_paper_run/) for a complete end-to-end run against a simple test paper. Highlights:
-
-- **Input:** 3-page PDF describing a neural network achieving 95.2% accuracy
-- **Output:** Working code that reproduces the result (95.5% — within tolerance)
-- **Time:** ~25 minutes across 5 phases
-- **Cost:** ~$1.15 in Claude tokens
-
-The [reproduction report](examples/test_paper_run/phases/results/1/outputs/reproduction_report.md) includes training curves, comparison tables, and discrepancy analysis.
+The per-paper README (`paper-template/README.md`) walks through the rest of the workflow.
 
 ## Tests
 
 ```bash
-pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
-137 tests covering models, storage, dependency graph, failure handling, execution loop, and end-to-end pipeline (with mocked LLM).
+Tests cover the original harness's models, storage, dependency graph, failure handling, and execution loop. The new template's `compare-claims.py` is smoke-tested in `papers/attention-is-all-you-need/` against real claims from `notes/claims.yaml`. Tests for the harness will move with the source to `.archive/` in Phase 4.
