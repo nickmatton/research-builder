@@ -1,0 +1,614 @@
+#!/usr/bin/env python3
+"""bin/lambda — provision/teardown Lambda Cloud GPUs with a hard price cap.
+
+Subcommands:
+    price <instance_type>          show hourly rate
+    list                           show active instances + ledger
+    budget                         show cumulative cost vs cap
+    provision <type> --max-hours N [--region R] [--yes]
+                                   launch with hard-cap enforcement
+    teardown <id|all>              terminate instance(s)
+    check                          poll Lambda, reconcile state, terminate overdue
+
+Hard-cap mechanics:
+  * State file at ~/.lambda/state.json tracks cumulative spend.
+  * Each provision EAGERLY commits max_hours × hourly_rate to the ledger.
+  * Provision is REFUSED if cumulative would exceed LAMBDA_BUDGET_USD.
+  * On teardown the actual elapsed cost replaces the estimate — refunds remaining headroom.
+  * A background nohup process per instance auto-teardowns at deadline; the
+    `check` subcommand reconciles if that process died (run via cron for full
+    safety, or before any new provision).
+
+Env:
+    LAMBDA_API_KEY       required
+    LAMBDA_BUDGET_USD    default 20.0
+    LAMBDA_REGION        default us-east-1
+
+Ports the useful subset of the archived harness's
+.archive/research-builder-v1/src/research_builder/cloud/ — dropping the
+LLM-driven needs_gpu classifier, async/sub-agent hooks, and
+claude_agent_sdk dependency. Sync HTTP via stdlib urllib (no httpx).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+LAMBDA_BASE_URL = "https://cloud.lambdalabs.com/api/v1"
+DEFAULT_REGION = os.environ.get("LAMBDA_REGION", "us-east-1")
+DEFAULT_CAP_USD = float(os.environ.get("LAMBDA_BUDGET_USD", "20.0"))
+FALLBACK_HOURLY_RATE_USD = 1.50      # used when the API doesn't expose a price
+DEFAULT_SSH_USER = "ubuntu"
+
+STATE_DIR = Path.home() / ".lambda"
+STATE_PATH = STATE_DIR / "state.json"
+SSH_DIR = STATE_DIR / "ssh"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# State
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Instance:
+    id: str
+    instance_type: str
+    hourly_rate: float
+    max_hours: float
+    max_cost: float                  # rate * max_hours, committed at launch
+    launched_at: str                 # ISO 8601 UTC
+    deadline_at: str                 # ISO 8601 UTC
+    public_ip: str = ""
+    region: str = DEFAULT_REGION
+    ssh_key_name: str = ""
+    ssh_priv_path: str = ""
+    work_dir: str = ""               # repo dir at provision time
+    terminated_at: str | None = None
+    actual_hours: float | None = None
+    notes: str = ""
+
+    @property
+    def actual_cost(self) -> float | None:
+        if self.actual_hours is None:
+            return None
+        return self.hourly_rate * self.actual_hours
+
+    @property
+    def cost_for_ledger(self) -> float:
+        ac = self.actual_cost
+        return ac if ac is not None else self.max_cost
+
+
+@dataclass
+class State:
+    cap_usd: float = DEFAULT_CAP_USD
+    instances: list[Instance] = field(default_factory=list)
+
+    def cumulative(self) -> float:
+        return sum(i.cost_for_ledger for i in self.instances)
+
+    def remaining(self) -> float:
+        return max(0.0, self.cap_usd - self.cumulative())
+
+    def would_exceed(self, additional: float) -> bool:
+        return self.cumulative() + additional > self.cap_usd
+
+    def active(self) -> list[Instance]:
+        return [i for i in self.instances if i.terminated_at is None]
+
+
+def load_state() -> State:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    if not STATE_PATH.exists():
+        return State()
+    raw = json.loads(STATE_PATH.read_text())
+    return State(
+        cap_usd=raw.get("cap_usd", DEFAULT_CAP_USD),
+        instances=[Instance(**i) for i in raw.get("instances", [])],
+    )
+
+
+def save_state(state: State) -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "cap_usd": state.cap_usd,
+        "instances": [i.__dict__ for i in state.instances],
+    }
+    STATE_PATH.write_text(json.dumps(payload, indent=2))
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Lambda API
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _api_key() -> str:
+    key = os.environ.get("LAMBDA_API_KEY")
+    if not key:
+        die("LAMBDA_API_KEY not set. Get one at https://cloud.lambdalabs.com/api-keys")
+    return key
+
+
+def _request(method: str, path: str, body: dict | None = None) -> dict:
+    url = f"{LAMBDA_BASE_URL}{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {_api_key()}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = json.loads(e.read())
+        except Exception:
+            err_body = {"error": str(e)}
+        raise LambdaError(f"HTTP {e.code} {method} {path}: {err_body}") from e
+
+
+class LambdaError(Exception):
+    pass
+
+
+def fetch_price(instance_type: str) -> float | None:
+    data = _request("GET", "/instance-types").get("data") or {}
+    info = data.get(instance_type)
+    if not info:
+        return None
+    cents = info.get("instance_type", {}).get("price_cents_per_hour")
+    return cents / 100.0 if cents is not None else None
+
+
+def add_ssh_key(name: str, public_key: str) -> str:
+    try:
+        _request("POST", "/ssh-keys", {"name": name, "public_key": public_key})
+    except LambdaError as e:
+        if "already exists" in str(e).lower():
+            return name
+        raise
+    return name
+
+
+def launch(instance_type: str, region: str, key_name: str, name: str) -> str:
+    data = _request("POST", "/instance-operations/launch", {
+        "region_name": region,
+        "instance_type_name": instance_type,
+        "ssh_key_names": [key_name],
+        "name": name,
+    })
+    ids = data.get("data", {}).get("instance_ids") or []
+    if not ids:
+        raise LambdaError(f"launch returned no instance IDs: {data}")
+    return ids[0]
+
+
+def get_instance(instance_id: str) -> dict:
+    return _request("GET", f"/instances/{instance_id}").get("data", {})
+
+
+def terminate(instance_id: str) -> None:
+    try:
+        _request("POST", "/instance-operations/terminate", {"instance_ids": [instance_id]})
+    except LambdaError as e:
+        if "404" in str(e) or "not found" in str(e).lower():
+            return
+        raise
+
+
+def wait_until_ready(instance_id: str, timeout_s: int = 600, poll_s: float = 10.0) -> dict:
+    deadline = time.monotonic() + timeout_s
+    last: dict = {}
+    while time.monotonic() < deadline:
+        last = get_instance(instance_id)
+        if last.get("status") == "active" and last.get("ip"):
+            return last
+        time.sleep(poll_s)
+    raise LambdaError(f"instance {instance_id} not ready in {timeout_s}s (last={last})")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# SSH key + remote_run.sh helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def generate_keypair(target_dir: Path, key_basename: str) -> tuple[Path, str]:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    priv = target_dir / key_basename
+    pub = target_dir / f"{key_basename}.pub"
+    for p in (priv, pub):
+        if p.exists():
+            p.unlink()
+    subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-N", "", "-q",
+         "-f", str(priv), "-C", "research-builder"],
+        check=True,
+    )
+    priv.chmod(0o600)
+    return priv, pub.read_text().strip()
+
+
+REMOTE_RUN_SH = r"""#!/usr/bin/env bash
+# Auto-generated by bin/lambda. Rsync work_dir → remote, exec command, rsync back.
+# Usage: bash remote_run.sh "python -m src.train --config configs/base.yaml"
+set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+source "$HERE/.lambda/env"
+SSH_OPTS=(-i "$LAMBDA_SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+RSYNC_SSH="ssh ${SSH_OPTS[*]}"
+
+rsync -az --delete \
+  --exclude .lambda --exclude '__pycache__' --exclude '*.pyc' \
+  --exclude '.git' --exclude 'runs' --exclude 'data' --exclude '.venv' \
+  -e "$RSYNC_SSH" "$HERE/" "$LAMBDA_USER@$LAMBDA_HOST:$LAMBDA_REMOTE_DIR/"
+
+ssh "${SSH_OPTS[@]}" "$LAMBDA_USER@$LAMBDA_HOST" "cd $LAMBDA_REMOTE_DIR && $*"
+RC=$?
+
+# Pull results back (runs/ + any other outputs).
+rsync -az -e "$RSYNC_SSH" \
+  "$LAMBDA_USER@$LAMBDA_HOST:$LAMBDA_REMOTE_DIR/runs/" "$HERE/runs/" || true
+
+exit $RC
+"""
+
+
+def write_workdir_artifacts(work_dir: Path, instance: Instance) -> None:
+    """Drop .lambda/env + remote_run.sh into the user's working directory."""
+    lam_dir = work_dir / ".lambda"
+    lam_dir.mkdir(parents=True, exist_ok=True)
+    (lam_dir / "env").write_text(
+        f'LAMBDA_HOST="{instance.public_ip}"\n'
+        f'LAMBDA_USER="{DEFAULT_SSH_USER}"\n'
+        f'LAMBDA_SSH_KEY="{instance.ssh_priv_path}"\n'
+        f'LAMBDA_REMOTE_DIR="/home/{DEFAULT_SSH_USER}/work"\n'
+        f'LAMBDA_INSTANCE_ID="{instance.id}"\n'
+    )
+    rr = work_dir / "remote_run.sh"
+    rr.write_text(REMOTE_RUN_SH)
+    rr.chmod(0o755)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Auto-teardown daemon
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def schedule_auto_teardown(instance_id: str, deadline_unix: float) -> bool:
+    """Fork a detached process that sleeps until deadline then runs teardown.
+
+    Returns True if scheduled. Survives terminal close via nohup-style detach.
+    Does NOT survive system reboot — `bin/lambda check` reconciles in that case.
+    """
+    self_path = Path(__file__).resolve()
+    log_path = STATE_DIR / f"teardown-{instance_id}.log"
+    cmd = (
+        f'sleep_until={deadline_unix:.0f}; '
+        f'now=$(date +%s); '
+        f'sleep_for=$((sleep_until - now)); '
+        f'if [ "$sleep_for" -gt 0 ]; then sleep "$sleep_for"; fi; '
+        f'"{self_path}" teardown "{instance_id}" --reason "auto-deadline" '
+        f'>> "{log_path}" 2>&1'
+    )
+    try:
+        subprocess.Popen(
+            ["bash", "-c", cmd],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except Exception as e:
+        warn(f"auto-teardown scheduling failed: {e}")
+        return False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Subcommands
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def cmd_price(args: argparse.Namespace) -> int:
+    rate = fetch_price(args.instance_type)
+    if rate is None:
+        warn(f"no price available for {args.instance_type}; "
+             f"using fallback ${FALLBACK_HOURLY_RATE_USD:.2f}/hr")
+        rate = FALLBACK_HOURLY_RATE_USD
+    print(f"{args.instance_type}: ${rate:.2f}/hr")
+    return 0
+
+
+def cmd_budget(args: argparse.Namespace) -> int:
+    state = load_state()
+    print(f"cap:        ${state.cap_usd:.2f}")
+    print(f"cumulative: ${state.cumulative():.2f}  ({len(state.active())} active)")
+    print(f"remaining:  ${state.remaining():.2f}")
+    return 0
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    state = load_state()
+    if not state.instances:
+        print("(no instances)")
+        return 0
+    print(f"{'id':<22} {'type':<14} {'rate':<8} {'max_hrs':<7} "
+          f"{'launched':<20} {'status':<11} {'cost':<8}")
+    for i in state.instances:
+        status = "ACTIVE" if i.terminated_at is None else "terminated"
+        cost = i.actual_cost if i.actual_cost is not None else i.max_cost
+        prefix = "" if i.actual_cost is not None else "≤"
+        print(f"{i.id:<22} {i.instance_type:<14} ${i.hourly_rate:<6.2f} "
+              f"{i.max_hours:<7.1f} {i.launched_at:<20} {status:<11} {prefix}${cost:.2f}")
+    print()
+    print(f"cumulative: ${state.cumulative():.2f} / ${state.cap_usd:.2f} "
+          f"(${state.remaining():.2f} remaining)")
+    return 0
+
+
+def cmd_provision(args: argparse.Namespace) -> int:
+    if args.max_hours <= 0:
+        die("--max-hours must be > 0")
+
+    state = load_state()
+    rate = fetch_price(args.instance_type)
+    if rate is None:
+        warn(f"no price available for {args.instance_type}; "
+             f"using fallback ${FALLBACK_HOURLY_RATE_USD:.2f}/hr (real cost may differ)")
+        rate = FALLBACK_HOURLY_RATE_USD
+
+    max_cost = rate * args.max_hours
+    cumulative_after = state.cumulative() + max_cost
+
+    print(f"instance:     {args.instance_type} @ ${rate:.2f}/hr × {args.max_hours} hrs "
+          f"= ${max_cost:.2f}")
+    print(f"region:       {args.region}")
+    print(f"cumulative:   ${state.cumulative():.2f} → ${cumulative_after:.2f} "
+          f"(cap ${state.cap_usd:.2f})")
+
+    if state.would_exceed(max_cost):
+        die(f"REFUSED: would exceed cap by ${cumulative_after - state.cap_usd:.2f}. "
+            f"Set LAMBDA_BUDGET_USD higher, lower --max-hours, "
+            f"or run `bin/lambda teardown all` to free headroom.")
+
+    if not args.yes:
+        confirm = input(f"Provision and commit ${max_cost:.2f} to ledger? [y/N] ").strip().lower()
+        if confirm != "y":
+            print("aborted.")
+            return 1
+
+    work_dir = Path(args.work_dir).resolve() if args.work_dir else Path.cwd()
+
+    # Generate ephemeral SSH keypair under ~/.lambda/ssh/<key-basename>
+    SSH_DIR.mkdir(parents=True, exist_ok=True)
+    key_basename = f"id_ed25519_{int(time.time())}"
+    priv_path, pub_text = generate_keypair(SSH_DIR, key_basename)
+
+    key_name = f"rb-{key_basename}"
+    print(f"registering ssh key {key_name}...")
+    add_ssh_key(key_name, pub_text)
+
+    print(f"launching {args.instance_type} in {args.region}...")
+    instance_id = launch(args.instance_type, args.region, key_name, name=key_name)
+
+    print(f"launched id={instance_id}; waiting for active+ip (up to 10 min)...")
+    info = wait_until_ready(instance_id)
+    public_ip = str(info.get("ip", ""))
+    print(f"ready: ip={public_ip}")
+
+    now = datetime.now(timezone.utc)
+    deadline = now.timestamp() + args.max_hours * 3600
+    deadline_iso = datetime.fromtimestamp(deadline, timezone.utc).isoformat()
+
+    instance = Instance(
+        id=instance_id,
+        instance_type=args.instance_type,
+        hourly_rate=rate,
+        max_hours=args.max_hours,
+        max_cost=max_cost,
+        launched_at=now.isoformat(),
+        deadline_at=deadline_iso,
+        public_ip=public_ip,
+        region=args.region,
+        ssh_key_name=key_name,
+        ssh_priv_path=str(priv_path),
+        work_dir=str(work_dir),
+        notes=args.note or "",
+    )
+    state.instances.append(instance)
+    save_state(state)
+
+    write_workdir_artifacts(work_dir, instance)
+    scheduled = schedule_auto_teardown(instance_id, deadline)
+
+    print()
+    print(f"✓ provisioned. id={instance_id}  ip={public_ip}")
+    print(f"  ssh:        ssh -i {priv_path} {DEFAULT_SSH_USER}@{public_ip}")
+    print(f"  work dir:   {work_dir}")
+    print(f"  helpers:    {work_dir}/.lambda/env, {work_dir}/remote_run.sh")
+    print(f"  deadline:   {deadline_iso}  (auto-teardown {'scheduled' if scheduled else 'NOT scheduled — set a calendar reminder'})")
+    print(f"  teardown:   {Path(__file__).resolve()} teardown {instance_id}")
+    print()
+    print(f"example:")
+    print(f"  cd {work_dir}")
+    print(f"  bash remote_run.sh \"uv pip install torch && python -m src.train --max-steps 1000\"")
+    return 0
+
+
+def cmd_teardown(args: argparse.Namespace) -> int:
+    state = load_state()
+
+    targets: list[Instance]
+    if args.target == "all":
+        targets = state.active()
+        if not targets:
+            print("(no active instances)")
+            return 0
+    else:
+        match = next((i for i in state.instances if i.id == args.target), None)
+        if match is None:
+            die(f"unknown instance id: {args.target}. "
+                f"Run `bin/lambda list` to see known ids.")
+        if match.terminated_at is not None:
+            print(f"{match.id} already terminated at {match.terminated_at}")
+            return 0
+        targets = [match]
+
+    for inst in targets:
+        try:
+            print(f"terminating {inst.id} ({inst.instance_type})...")
+            terminate(inst.id)
+        except LambdaError as e:
+            warn(f"terminate failed for {inst.id}: {e}")
+            continue
+        now = datetime.now(timezone.utc)
+        inst.terminated_at = now.isoformat()
+        # Compute actual elapsed hours from launched_at.
+        try:
+            launched = datetime.fromisoformat(inst.launched_at)
+            inst.actual_hours = max(0.0, (now - launched).total_seconds() / 3600.0)
+        except Exception:
+            inst.actual_hours = inst.max_hours
+        if args.reason:
+            inst.notes = (inst.notes + f" [{args.reason}]").strip()
+        actual_cost = inst.actual_cost or 0.0
+        refund = inst.max_cost - actual_cost
+        print(f"  terminated. actual={inst.actual_hours:.2f}hr "
+              f"actual_cost=${actual_cost:.2f} refund=${refund:.2f}")
+
+    save_state(state)
+    print()
+    print(f"cumulative: ${state.cumulative():.2f} / ${state.cap_usd:.2f} "
+          f"(${state.remaining():.2f} remaining)")
+    return 0
+
+
+def cmd_check(args: argparse.Namespace) -> int:
+    """Reconcile local state with Lambda + auto-teardown overdue instances.
+
+    Run via cron for full safety:  */15 * * * * /path/to/bin/lambda check
+    """
+    state = load_state()
+    now = datetime.now(timezone.utc)
+    overdue: list[Instance] = []
+    drifted: list[tuple[Instance, str]] = []
+
+    for inst in state.active():
+        # Was the instance silently terminated on Lambda's side?
+        try:
+            info = get_instance(inst.id)
+            api_status = info.get("status")
+        except LambdaError as e:
+            if "404" in str(e):
+                drifted.append((inst, "missing on Lambda — marking terminated"))
+                api_status = "missing"
+            else:
+                warn(f"check {inst.id}: {e}")
+                continue
+
+        if api_status in ("terminated", "missing"):
+            inst.terminated_at = now.isoformat()
+            try:
+                launched = datetime.fromisoformat(inst.launched_at)
+                inst.actual_hours = max(0.0, (now - launched).total_seconds() / 3600.0)
+            except Exception:
+                inst.actual_hours = inst.max_hours
+            continue
+
+        # Still active — past deadline?
+        try:
+            deadline = datetime.fromisoformat(inst.deadline_at)
+        except Exception:
+            continue
+        if now > deadline:
+            overdue.append(inst)
+
+    save_state(state)
+
+    if drifted:
+        print("Drift detected (cleaned up):")
+        for inst, msg in drifted:
+            print(f"  {inst.id}: {msg}")
+
+    if overdue:
+        print(f"Overdue ({len(overdue)} instance(s)) — terminating:")
+        for inst in overdue:
+            class A: pass
+            ns = A()
+            ns.target = inst.id
+            ns.reason = f"check-overdue (deadline {inst.deadline_at})"
+            cmd_teardown(ns)
+    else:
+        print(f"OK — {len(state.active())} active, none overdue.")
+    return 0
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Entry
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def warn(msg: str) -> None:
+    print(f"warning: {msg}", file=sys.stderr)
+
+
+def die(msg: str) -> None:
+    print(f"error: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(prog="bin/lambda", description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    pp = sub.add_parser("price", help="show hourly rate")
+    pp.add_argument("instance_type")
+    pp.set_defaults(func=cmd_price)
+
+    pb = sub.add_parser("budget", help="show cumulative cost vs cap")
+    pb.set_defaults(func=cmd_budget)
+
+    pl = sub.add_parser("list", help="show all instances + ledger")
+    pl.set_defaults(func=cmd_list)
+
+    pv = sub.add_parser("provision", help="launch an instance under the hard cap")
+    pv.add_argument("instance_type",
+                    help="e.g. gpu_1x_a10, gpu_1x_a100, gpu_1x_h100, gpu_8x_a100")
+    pv.add_argument("--max-hours", type=float, required=True,
+                    help="hard cap on this instance's lifetime; auto-teardown at deadline")
+    pv.add_argument("--region", default=DEFAULT_REGION)
+    pv.add_argument("--work-dir", default=None,
+                    help="repo dir to drop .lambda/env + remote_run.sh into "
+                         "(default: cwd)")
+    pv.add_argument("--note", default=None, help="free-form annotation for the ledger")
+    pv.add_argument("--yes", "-y", action="store_true", help="skip confirm prompt")
+    pv.set_defaults(func=cmd_provision)
+
+    pt = sub.add_parser("teardown", help="terminate an instance (or all)")
+    pt.add_argument("target", help="instance id, or 'all'")
+    pt.add_argument("--reason", default=None, help="annotation for the ledger")
+    pt.set_defaults(func=cmd_teardown)
+
+    pc = sub.add_parser("check",
+                        help="reconcile state with Lambda + auto-teardown overdue")
+    pc.set_defaults(func=cmd_check)
+
+    args = p.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

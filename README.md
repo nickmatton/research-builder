@@ -122,6 +122,37 @@ claude .                                  # open Claude Code
 
 The per-paper README (`paper-template/README.md`) walks through the rest of the workflow.
 
+## Cloud GPU access (Lambda Labs)
+
+Most paper reproductions need a real GPU. `bin/lambda` provisions Lambda Cloud instances under a hard cumulative spend cap.
+
+```bash
+export LAMBDA_API_KEY=secret_xxx          # https://cloud.lambdalabs.com/api-keys
+export LAMBDA_BUDGET_USD=20               # default 20; cumulative across all launches
+
+bin/lambda price gpu_1x_a100              # → "$1.29/hr"
+bin/lambda budget                         # cap, cumulative, remaining
+
+# Provision with hard per-instance deadline (auto-teardown at deadline).
+# Refuses if cumulative + (rate × max-hours) > cap.
+bin/lambda provision gpu_1x_a100 --max-hours 6 --work-dir papers/attention-is-all-you-need
+# → writes .lambda/env + remote_run.sh into the work dir, schedules nohup teardown
+
+cd papers/attention-is-all-you-need
+bash remote_run.sh "uv pip install torch && python -m src.train --max-steps 1000"
+# rsyncs work-dir → remote, executes, rsyncs runs/ back
+
+bin/lambda list                           # show ledger
+bin/lambda teardown <id>                  # explicit teardown
+bin/lambda check                          # cron-friendly: terminates overdue instances
+```
+
+**Hard-cap mechanics:**
+- State at `~/.lambda/state.json`. Each provision *eagerly* commits `max_hours × hourly_rate` to the ledger; teardown replaces the estimate with actual elapsed cost.
+- `would_exceed` check is plain arithmetic — provision is refused, not warned, if it would breach `LAMBDA_BUDGET_USD`.
+- A backgrounded nohup process schedules auto-teardown at the per-instance deadline. Run `bin/lambda check` via cron for full safety against the rare case of the nohup dying before deadline.
+- Ports the useful subset of the original harness's `cloud/` code (preserved at `.archive/research-builder-v1/src/research_builder/cloud/`); drops the LLM-driven `needs_gpu` classifier and Claude Agent SDK dependency. ~400 LoC of stdlib Python (uses `urllib`, no `httpx`).
+
 ## Tests
 
 The current architecture's tests live with the worked example:

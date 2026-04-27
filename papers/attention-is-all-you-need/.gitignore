@@ -17,3 +17,7 @@ wandb/
 
 # OS
 .DS_Store
+
+# Cloud GPU artifacts written by bin/lambda provision
+.lambda/
+remote_run.sh
