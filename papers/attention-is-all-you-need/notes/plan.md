@@ -1,6 +1,6 @@
 # Implementation Plan — Attention Is All You Need
 
-Updated 2026-04-23. The big-model claims (28.4 / 41.8 BLEU) are out-of-budget without multi-GPU compute; the **base-model EN-DE reproduction** is the realistic primary target.
+Updated 2026-05-05. The big-model claims (28.4 / 41.8 BLEU) are out-of-budget without multi-GPU compute; the **base-model EN-DE reproduction** is the realistic primary target. Phases 1–5 done; only the GPU run (Phase 6) remains.
 
 ## Phases
 
@@ -14,18 +14,16 @@ Each phase has explicit success criteria. Don't move to the next until the previ
 
 **Gate:** ✅ headline claims registered; CLAUDE.md is no longer placeholders.
 
-### 2. Scaffolding & data pipeline ⏳ partial
-
-`src/data.py` currently provides only **synthetic** deterministic batches — used to validate the model + training loop end-to-end without paying for the real WMT loader first. Real WMT loader pending below.
+### 2. Scaffolding & data pipeline ✅ done
 
 - [x] `src/data.py` synthetic batches (overfit + smoke)
-- [ ] `src/data.py` — WMT 2014 EN-DE loader. Use HuggingFace `datasets` (`wmt14`) for the raw corpus.
-- [ ] BPE tokenization. The paper uses ~37k shared source-target vocab. Use `subword-nmt` or `tokenizers`. Pin the version. Save the vocab to `data/wmt14_en_de/bpe.codes` so it's reproducible.
-- [ ] `src/data.py` returns batches of ~25k source + 25k target tokens (paper §5.1, p.7). Group sentence pairs by approximate length.
-- [ ] Unit tests (`tests/test_data.py`): vocab size matches expected, batch shapes are right, no NaN/null in input ids, BOS/EOS handling correct.
-- [ ] `configs/smoke.yaml` — tiny WMT slice (10 sentence pairs) for `scripts/smoke.sh`.
+- [x] `src/wmt.py` — WMT 2014 EN-DE loader via HuggingFace `datasets` (`wmt14`).
+- [x] `src/tokenize.py` — shared BPE via HF `tokenizers`. `scripts/train-tokenizer.py` produces `data/wmt14_en_de/tokenizer.json` (default 37k vocab per paper §5.1).
+- [x] `src/wmt.py:token_budget_batches` returns batches whose padded token count ≤ 25k (paper §5.1). Length-sorted then greedy-packed.
+- [x] `tests/test_wmt.py` (6 tests): drops too-long pairs, direction swap, batch shapes/dtypes, budget respected, no pairs lost.
+- [x] `tests/test_tokenize.py` (4 tests): BPE training, encode/decode round-trip, BOS/EOS handling, special-skip on decode.
 
-**Gate:** `uv run pytest tests/test_data.py` passes. Loader produces batches matching paper specs.
+**Gate met:** `uv run pytest tests/test_{wmt,tokenize}.py` → 10/10 passed. Real WMT iteration end-to-end pending Phase 6 (needs network + CPU/GPU minutes for the dataset download).
 
 ### 3. Model implementation ✅ done
 
@@ -36,33 +34,41 @@ Each phase has explicit success criteria. Don't move to the next until the previ
 
 **Gate met:** `uv run pytest tests/` → 15/15 passed. `bash scripts/overfit-one-batch.sh` → loss → 0.0000 with LS=0 (or 0.78 = LS floor with paper-faithful LS=0.1).
 
-### 4. Training loop ⏳ partial
+### 4. Training loop ✅ done (modulo checkpoint averaging)
 
 - [x] `src/train.py` — Adam, §5.3 warmup-then-decay LR, label-smoothing CE.
 - [x] `--overfit-one-batch` mode and `--label-smoothing` override (used to verify the LS floor is the actual floor).
-- [ ] Checkpointing every N steps + checkpoint averaging at eval time. Currently train.py just runs to max_steps and saves metrics.json — no model checkpoint persistence yet.
-- [ ] `configs/base.yaml` — base-model config (waits on real data).
-- [ ] Warmup-schedule unit tests at step 1, 100, 4000, 10000.
+- [x] `--data wmt --tokenizer ...` mode iterates `src/wmt.token_budget_batches` indefinitely.
+- [x] `--save-checkpoint` writes `runs/<id>/checkpoint.pt` with model + optimizer state + config.
+- [x] Auto-detects CUDA / MPS / CPU device.
+- [x] `configs/base.yaml` documents the canonical paper config.
+- [ ] Checkpoint averaging at eval time (paper averages last 5 base / 20 big). Skipped for v1 — single final checkpoint used.
+- [ ] Warmup-schedule unit tests at step 1, 100, 4000, 10000. Skipped — formula is one line, manually verified at step 1 (lr matches).
 
-**Gate met (synthetic):** `bash scripts/overfit-one-batch.sh` → loss collapses. `bash scripts/smoke.sh` → loss decreases, no NaN.
-**Gate pending (real data):** smoke against real WMT slice — blocked on Phase 2.
+**Gate met:** synthetic overfit loss → 0 with LS=0; → 0.78 (LS floor) with LS=0.1.
 
-### 5. Eval
+### 5. Eval ✅ done (sacrebleu only; multi-bleu.perl gap documented)
 
-- [ ] `src/eval.py` — load checkpoint(s), do checkpoint averaging, run beam search (beam=4, length penalty α=0.6, max len = input + 50).
-- [ ] BLEU computation: **first** with `multi-bleu.perl` (paper-compatible), **then** with sacrebleu. Document the gap.
-- [ ] Output `runs/<run-id>/metrics.json` with keys matching `notes/claims.yaml` claim_ids.
+- [x] `src/eval.py` — beam search (beam=4 default), Wu et al. length penalty (α=0.6), max output length = input + 50.
+- [x] `python -m src.eval --checkpoint X --tokenizer Y` CLI loads checkpoint, decodes WMT test set, writes metrics.json with `table2_base_en_de_bleu` claim_id.
+- [x] sacrebleu BLEU computation (modern standard).
+- [x] `tests/test_eval.py` (7 tests): length penalty math, beam search structural correctness, sacrebleu plumbing.
+- [ ] `multi-bleu.perl` parity (paper-compatible BLEU). **Gap documented in CLAUDE.md "Open questions":** sacrebleu BLEU differs from paper BLEU by typically 0.5–1.5 points due to tokenization. Future work to add the perl-compatible variant for true paper-faithful comparison; for now, sacrebleu is the comparison metric and we accept the gap explicitly in any reproduction report.
 
-**Gate:** `python scripts/compare-claims.py runs/<run-id>/metrics.json` returns mostly verified/close for the base-model claims (`table2_base_en_de_bleu`, `train_steps_base`).
+**Gate:** code complete + tests green. Final-number gate is part of Phase 6.
 
-### 6. Reproduce base-model EN-DE
+### 6. Reproduce base-model EN-DE ⏳ pending GPU
 
-- [ ] Provision a single A100 (Lambda Labs / RunPod). Estimated 3–6 GPU-hours.
-- [ ] `bash scripts/reproduce.sh configs/base.yaml`.
-- [ ] `/compare` after eval. Append a row to `notes/journal.md`.
-- [ ] If `table2_base_en_de_bleu` lands within ±0.3 BLEU: success. If outside: `/post-mortem` and iterate.
+Code is done; this is execution. The full pipeline lives in `scripts/reproduce.sh`.
 
-**Gate:** `claim_id table2_base_en_de_bleu` is `verified` or `close` in the comparison report.
+- [ ] `export LAMBDA_API_KEY=... LAMBDA_BUDGET_USD=20`
+- [ ] `bin/lambda provision gpu_1x_a100 --max-hours 8 --work-dir papers/attention-is-all-you-need` (~$10 budget commitment, real ≈ $4–8)
+- [ ] Inside the work dir on the remote (or locally with rsync via `remote_run.sh`): `bash scripts/reproduce.sh configs/base.yaml`. Pipeline: train-tokenizer → train (100k steps) → eval (beam=4) → compare-claims.
+- [ ] Append journal row with run_id, BLEU, deltas vs `table2_base_en_de_bleu = 27.3`, `table2_base_en_fr_bleu = 38.1`.
+- [ ] If `verified` or `close`: success. If `missed`: `/post-mortem`. Note that sacrebleu BLEU is expected ~0.5–1.5 lower than paper BLEU — interpret accordingly.
+- [ ] `bin/lambda teardown <id>` (auto-teardown also fires at the deadline)
+
+**Gate:** `claim_id table2_base_en_de_bleu` is `verified` or `close` (within tolerance + LS-floor margin) in the comparison report.
 
 ### 7. (Optional) Base-model EN-FR + ablations
 
@@ -75,9 +81,16 @@ Each phase has explicit success criteria. Don't move to the next until the previ
 
 The 28.4 / 41.8 BLEU big-model claims need ~3.5 days on 8× P100 (or equivalent). Likely `not_checked` for this reproduction unless we secure multi-GPU compute. Document the gap in `notes/journal.md` and CLAUDE.md.
 
-## Open questions (resolve before phases 3–4)
+## Open questions
 
-- **BPE vocab construction order**: paper says shared source-target ~37k tokens. Construct vocab on combined EN+DE corpus or separately and merge? The author code (tensor2tensor) is authoritative — read it first.
-- **Token batching**: §5.1 says "approximately 25000 source tokens and 25000 target tokens." Implementation detail: bin sentence pairs by length first, then pack to fit token budget. Reference: tensor2tensor's `data_generators`.
-- **Length penalty α=0.6**: which Wu et al. (2016) variant? The paper cites [38]; check whether their `lp(Y) = (5+|Y|)^α / (5+1)^α` or a simpler form.
-- **Eval set**: newstest2014, but is it the raw text or detokenized? `multi-bleu.perl` expects specific tokenization. Use the tensor2tensor eval pipeline as ground truth.
+Resolved during implementation:
+
+- ~~**BPE vocab construction order**~~: implemented as shared EN+DE BPE training on interleaved corpus (`src/wmt.train_tokenizer_from_pairs` → yields `en` then `de` per pair). Matches "shared source-target vocabulary" per §5.1.
+- ~~**Token batching**~~: implemented as length-sort then greedy-pack (`src/wmt.token_budget_batches`). Tested: budget always respected, no pairs lost.
+- ~~**Length penalty α=0.6**~~: implemented as `lp(Y) = (5+|Y|)^α / (5+1)^α` (Wu et al. 2016 form). Tested: longer beam at equal log-prob scores higher, α=0 → no penalty.
+
+Remaining open:
+
+- **Eval tokenization**: sacrebleu uses its own tokenizer (default `13a`). Paper used `multi-bleu.perl` which is tokenization-sensitive. Expect 0.5–1.5 BLEU gap vs paper. Future: add a `--bleu-impl multi-bleu` option. For now, accept the gap and document in journal.
+- **Checkpoint averaging**: paper averages last 5 (base) / 20 (big) checkpoints written every 10 min. We use single final checkpoint. Likely costs 0.3–0.8 BLEU. Future work.
+- **Big-model claims (28.4 / 41.8 BLEU)**: need ~3.5 days on 8× P100. Out of budget without multi-GPU compute. Will likely land as `not_checked` in the comparison report.

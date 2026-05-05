@@ -62,23 +62,36 @@ Use `scripts/smoke.sh` before anything full-scale. Always.
 ## Commands
 
 ```bash
-# One-time setup after dropping the PDF
-python scripts/extract-paper-text.py     # → paper/paper.txt for Read/Grep
+# One-time setup
+uv sync                                   # install per-paper env (torch, datasets, tokenizers, sacrebleu, ...)
+python scripts/extract-paper-text.py      # → paper/paper.txt for Read/Grep
+python scripts/train-tokenizer.py         # → data/wmt14_en_de/tokenizer.json (paper §5.1, 37k BPE)
 
 # Verification ladder — run in order
-uv run pytest                            # 1. unit tests
-bash scripts/overfit-one-batch.sh        # 2. overfit-one-batch sanity
-bash scripts/smoke.sh                    # 3. smoke run (100 steps, tiny data)
-bash scripts/reproduce.sh                # 4. full reproduction
+uv run pytest                             # 1. unit tests (32 of them)
+bash scripts/overfit-one-batch.sh         # 3. overfit-one-batch (loss → 0 with LS=0)
+bash scripts/smoke.sh wmt 500             # 4. smoke on real WMT slice
+bash scripts/reproduce.sh configs/base.yaml  # 6. full base-model reproduction (A100, 3-6h)
+
+# Eval a trained checkpoint manually
+uv run python -m src.eval \
+    --checkpoint runs/<id>/checkpoint.pt --tokenizer data/wmt14_en_de/tokenizer.json \
+    --output runs/<id>/metrics.json
 
 # Compare a run's metrics against the claims ledger
-python scripts/compare-claims.py runs/<run-id>/metrics.json
+python scripts/compare-claims.py runs/<id>/metrics.json
 
 # Look up a cited paper (Semantic Scholar)
 python scripts/lookup-citation.py "Attention Is All You Need"
+
+# GPU access (toolkit-level)
+bin/lambda price gpu_1x_a100              # check rate
+bin/lambda provision gpu_1x_a100 --max-hours 8 --work-dir .   # launch under hard cap
+bash remote_run.sh "bash scripts/reproduce.sh"     # rsync work dir → remote, run, rsync back
+bin/lambda teardown <id>                  # explicit teardown (auto-fires at deadline too)
 ```
 
-Tooling: Claude reads/greps `paper/paper.txt` directly with built-in tools. No MCP servers, no toolkit install — just three Python scripts in `scripts/` and the standard Claude Code tool set.
+Tooling: Claude reads/greps `paper/paper.txt` directly with built-in tools. Code lives in `src/`, tests in `tests/`. Per-paper deps in this repo's `pyproject.toml`; toolkit-level helpers (`bin/lambda`, `bin/new-paper`) are stdlib-only.
 
 ## Workflow expectations
 

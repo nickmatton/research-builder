@@ -1,6 +1,6 @@
 [project]
 name = "research-builder-toolkit"
-version = "0.2.0"
+version = "0.3.0"
 description = "Paper reproduction template + helper scripts for Claude Code"
 requires-python = ">=3.11"
 dependencies = [
@@ -8,14 +8,18 @@ dependencies = [
     "pdfplumber>=0.11",
     # paper-template/scripts/compare-claims.py
     "pyyaml>=6.0",
-    # Per-paper src/ + tests (e.g. papers/attention-is-all-you-need/)
-    "torch>=2.0",
-    "pytest>=8.0",
 ]
 
-# Note: lookup-citation.py uses the standard library urllib — no httpx needed.
+# Per-paper deps (torch, datasets, tokenizers, sacrebleu, pytest, etc.) live in
+# each paper repo's own pyproject.toml — see
+# papers/attention-is-all-you-need/pyproject.toml for an example.
+#
+# Helper scripts in paper-template/scripts/ that need extra deps document them
+# inline (e.g. lookup-citation.py uses only the stdlib urllib).
+#
+# bin/lambda is also stdlib-only.
+#
 # The original 9.5k LoC harness lived under src/research_builder/ and is now
 # preserved at .archive/research-builder-v1/. Its dependencies (claude-agent-sdk,
 # textual, prompt-toolkit, sentence-transformers, click, rich, etc.) are NOT
-# part of this toolkit env; checkout an older commit (e20cd93 or 90076ce) to
-# resurrect them if needed.
+# part of this toolkit env; checkout commit 90076ce or earlier to resurrect.

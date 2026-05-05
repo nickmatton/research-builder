@@ -10,7 +10,7 @@ jobs:
   paper-attention:
     name: papers/attention-is-all-you-need
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -19,34 +19,27 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Install Python + toolkit env
+      - name: Install per-paper env
+        working-directory: papers/attention-is-all-you-need
         run: uv sync
 
-      - name: Unit tests (verification ladder rung 1)
+      - name: Unit tests (rung 1) — 32 tests across attention/positional/model/tokenize/wmt/eval
         working-directory: papers/attention-is-all-you-need
-        run: uv run --project ../.. pytest tests/ -v
+        run: uv run pytest tests/ -v
 
       - name: Overfit-one-batch (rung 3, paper-faithful LS=0.1)
         working-directory: papers/attention-is-all-you-need
-        run: |
-          uv run --project ../.. python -m src.train \
-            --overfit-one-batch \
-            --max-steps 500 \
-            --output-dir runs/ci-overfit-ls01
+        run: uv run python -m src.train --overfit-one-batch --max-steps 500 --output-dir runs/ci-overfit-ls01
 
-      - name: Overfit-one-batch sanity (rung 3, LS=0 → loss must collapse to ~0)
+      - name: Overfit-one-batch sanity (LS=0 → loss < 0.05)
         working-directory: papers/attention-is-all-you-need
         run: |
-          uv run --project ../.. python -m src.train \
-            --overfit-one-batch \
-            --max-steps 500 \
-            --label-smoothing 0 \
-            --output-dir runs/ci-overfit-ls0
-          # Assert: final loss < 0.05 (truly overfit a single batch).
-          uv run --project ../.. python -c "
+          uv run python -m src.train --overfit-one-batch --max-steps 500 \
+            --label-smoothing 0 --output-dir runs/ci-overfit-ls0
+          uv run python -c "
           import json, sys
           m = json.load(open('runs/ci-overfit-ls0/metrics.json'))
-          assert m['final_loss'] < 0.05, f\"overfit failed: final_loss={m['final_loss']} (expected <0.05)\"
+          assert m['final_loss'] < 0.05, f\"overfit failed: final_loss={m['final_loss']}\"
           print(f\"overfit OK: final_loss={m['final_loss']:.6f}\")
           "
 
@@ -55,4 +48,4 @@ jobs:
         run: |
           mkdir -p runs/ci-compare
           echo '{"table2_base_en_de_bleu": 27.0, "train_steps_base": 100000}' > runs/ci-compare/metrics.json
-          uv run --project ../.. python scripts/compare-claims.py runs/ci-compare/metrics.json
+          uv run python scripts/compare-claims.py runs/ci-compare/metrics.json

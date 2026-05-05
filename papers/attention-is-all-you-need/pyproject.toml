@@ -1,0 +1,20 @@
+[project]
+name = "attention-is-all-you-need-reproduction"
+version = "0.1.0"
+description = "Reproduction of Vaswani et al. 2017 (NeurIPS), Transformer base model on WMT 2014 EN-DE"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.0",
+    "pyyaml>=6.0",
+    # WMT data loading + BPE tokenization (paper §5.1)
+    "datasets>=3.0",
+    "tokenizers>=0.20",
+    # BLEU computation (sacrebleu — the modern standard; paper used multi-bleu.perl
+    # which we document the gap for in CLAUDE.md)
+    "sacrebleu>=2.0",
+    # Test runner — kept in primary deps (not optional) so `uv sync` is enough.
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

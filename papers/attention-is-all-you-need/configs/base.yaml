@@ -1,0 +1,38 @@
+# Transformer (base) — paper Table 3, p.9
+# Full WMT 2014 EN-DE reproduction config.
+#
+# Used by scripts/reproduce.sh. Not parsed by src.train (which takes CLI args);
+# this file documents the canonical CLI invocation per the paper.
+
+# Model (paper §3 + Table 3)
+d_model: 512
+num_heads: 8
+num_layers: 6           # N=6 encoder + N=6 decoder
+d_ff: 2048
+dropout: 0.1            # P_drop, paper §5.4
+
+# Optimizer (paper §5.3)
+adam_beta1: 0.9
+adam_beta2: 0.98
+adam_eps: 1e-9
+warmup_steps: 4000
+label_smoothing: 0.1    # ε_ls, paper §5.4
+
+# Training (paper §5.1, §5.2)
+max_steps: 100000       # paper: "100,000 steps or 12 hours"
+token_budget: 25000     # paper §5.1: ~25k src + ~25k tgt per batch
+max_len: 256            # drop pairs whose either side exceeds this
+data: wmt
+direction: en-de
+tokenizer_path: data/wmt14_en_de/tokenizer.json
+vocab_size_target: 37000  # passed to scripts/train-tokenizer.py
+
+# Eval (paper §6.1)
+beam_size: 4
+length_penalty: 0.6     # α=0.6, Wu et al. 2016
+max_extra_tokens: 50    # output len = input len + this
+
+# Compute estimate
+# Paper: 12 GPU-h on 8× P100. On a single A100: ~3-6 GPU-h.
+# Provision example:
+#   bin/lambda provision gpu_1x_a100 --max-hours 8 --work-dir papers/attention-is-all-you-need

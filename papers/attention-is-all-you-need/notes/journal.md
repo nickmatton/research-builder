@@ -105,4 +105,39 @@ End-to-end pipeline executes — no NaN, no crashes, loss decreases. The model c
 
 The methodology and infrastructure work end-to-end on synthetic data. Next blocker: implement the WMT 2014 EN-DE loader (HuggingFace `datasets` + BPE tokenizer) and rerun smoke against real data. Then provision compute and attempt the headline `table2_base_en_de_bleu` claim.
 
+## impl-2026-05-05  (2026-05-05T14:25)
+**Type:** implementation (not a training run)
+**Git SHA:** _(this commit)_
+
+**What landed:**
+- `src/tokenize.py` — HF `tokenizers` BPE wrapper (PAD/BOS/EOS/UNK at ids 0–3).
+- `src/wmt.py` — HF `datasets` loader for WMT 2014 EN-DE; `tokenize_pairs` with length filter; `token_budget_batches` (length-sort + greedy pack, paper §5.1).
+- `src/eval.py` — beam search (Wu et al. length penalty); sacrebleu BLEU; CLI for `python -m src.eval --checkpoint ... --tokenizer ...`.
+- `src/train.py` extended: `--data wmt --tokenizer X` mode iterates real WMT batches indefinitely; `--save-checkpoint` writes model+optimizer state; auto-detects CUDA/MPS/CPU.
+- `scripts/train-tokenizer.py` — one-shot BPE training (default 37k vocab per paper).
+- `configs/base.yaml` — paper-faithful base-model config (d=512, h=8, N=6, d_ff=2048, warmup=4000, ...).
+- `scripts/reproduce.sh` — full pipeline: train-tokenizer → train (100k steps) → eval (beam=4) → compare-claims.
+- `scripts/smoke.sh` extended: `bash scripts/smoke.sh wmt 200` runs synthetic-mode-like smoke against real WMT (auto-trains a small tokenizer if missing).
+- `papers/attention-is-all-you-need/pyproject.toml` (NEW) — per-paper env. Toolkit pyproject.toml slimmed back to 2 deps (pdfplumber, pyyaml).
+- All scripts dropped the absolute `--project /Users/...` path and now run via the local per-paper venv.
+
+**Tests:** `uv run pytest tests/` → **32/32 passed in 0.47s** (was 15/15 before).
+- New: tests/test_tokenize.py (4), tests/test_wmt.py (6), tests/test_eval.py (7).
+- Existing 15 still green after the train.py refactor.
+
+**Verification ladder status:**
+- ✅ Rung 1: 32 unit tests
+- ✅ Rung 3 (synthetic): overfit-one-batch loss → 0 with LS=0; → 0.78 with LS=0.1
+- ✅ Rung 4 (synthetic): smoke 200 steps, no NaN
+- ⏳ Rung 4 (real WMT): blocked on dataset download (HF datasets, ~1.5 GB EN-DE, no network in this session). Code path verified by tests + manual `uv run python -c "from src import wmt"` import-clean check.
+- ⏳ Rung 5 (eval): code complete, needs trained checkpoint
+- ⏳ Rung 6 (full reproduction): needs A100 (~3–6 GPU-h, ~$5 with bin/lambda), not run yet
+
+**Known gaps documented in plan.md "Open questions":**
+- sacrebleu vs paper's `multi-bleu.perl` (~0.5–1.5 BLEU gap)
+- single-checkpoint vs paper's last-5-average (~0.3–0.8 BLEU)
+- Big-model 28.4 / 41.8 claims out-of-budget without 8x GPU
+
+Next: provision A100 via bin/lambda, run reproduce.sh, populate the journal with a real BLEU number.
+
 <!-- Append run blocks below. -->
