@@ -152,6 +152,9 @@ def _request(method: str, path: str, body: dict | None = None) -> dict:
     # Lambda Cloud uses Bearer auth: "Authorization: Bearer <API-KEY>".
     req.add_header("Authorization", f"Bearer {_api_key()}")
     req.add_header("Content-Type", "application/json")
+    # Lambda's site sits behind Cloudflare, which blocks the default
+    # "Python-urllib/3.x" User-Agent (Cloudflare error code 1010).
+    req.add_header("User-Agent", "research-builder/0.3 (+https://github.com/nickmatton/research-builder)")
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             return json.loads(resp.read())
