@@ -47,7 +47,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-LAMBDA_BASE_URL = "https://cloud.lambdalabs.com/api/v1"
+LAMBDA_BASE_URL = "https://cloud.lambda.ai/api/v1"
+# Lambda migrated the API host from cloud.lambdalabs.com → cloud.lambda.ai;
+# the old host returns 301 and urllib drops Authorization on redirect, so
+# we hit the new host directly.
 DEFAULT_REGION = os.environ.get("LAMBDA_REGION", "us-east-1")
 DEFAULT_CAP_USD = float(os.environ.get("LAMBDA_BUDGET_USD", "20.0"))
 FALLBACK_HOURLY_RATE_USD = 1.50      # used when the API doesn't expose a price
@@ -139,7 +142,7 @@ def save_state(state: State) -> None:
 def _api_key() -> str:
     key = os.environ.get("LAMBDA_API_KEY")
     if not key:
-        die("LAMBDA_API_KEY not set. Get one at https://cloud.lambdalabs.com/api-keys")
+        die("LAMBDA_API_KEY not set. Get one at https://cloud.lambda.ai/api-keys")
     return key
 
 
@@ -163,7 +166,7 @@ def _request(method: str, path: str, body: dict | None = None) -> dict:
         hint = ""
         if e.code in (401, 403):
             hint = ("  → 401/403 usually means the API key is wrong or revoked. "
-                    "Re-check $LAMBDA_API_KEY at https://cloud.lambdalabs.com/api-keys")
+                    "Re-check $LAMBDA_API_KEY at https://cloud.lambda.ai/api-keys")
         raise LambdaError(f"HTTP {e.code} {method} {path}: {err_body}{hint}") from e
 
 
