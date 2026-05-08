@@ -80,7 +80,7 @@ Before this template existed, `research-builder` was a 9.5k LoC custom agent har
 
 It worked. It was also a small platform to maintain — every Claude Agent SDK upgrade meant re-validating ~9.5k LoC of orchestration, and every feature Claude Code shipped (plan mode, hooks, sub-agents, compaction, memory, `/loop`, scheduled triggers) made the custom orchestration a little less load-bearing.
 
-The harness source is preserved at [`.archive/research-builder-v1/`](.archive/research-builder-v1/) — frozen but tracked, browseable on GitHub as proof-of-concept. The methodology — claims ledger schema, verification ladder, post-mortem template, structured result artifact format — was extracted before the move ([Phase 1 commit](../../commit/e6f5c3d)) and now lives in `paper-template/.claude/skills/`. The toolkit's `pyproject.toml` no longer carries the harness's dependencies (claude-agent-sdk, textual, prompt-toolkit, sentence-transformers, click, rich, …) — checkout commit [`90076ce`](../../commit/90076ce) or earlier to resurrect that env.
+The harness source is preserved at [`custom-harness/`](custom-harness/) — frozen but tracked, browseable on GitHub as proof-of-concept. The methodology — claims ledger schema, verification ladder, post-mortem template, structured result artifact format — was extracted before the move ([Phase 1 commit](../../commit/e6f5c3d)) and now lives in `paper-template/.claude/skills/`. The toolkit's `pyproject.toml` no longer carries the harness's dependencies (claude-agent-sdk, textual, prompt-toolkit, sentence-transformers, click, rich, …) — checkout commit [`90076ce`](../../commit/90076ce) or earlier to resurrect that env.
 
 The harness was the right thing to build first. It validated the methodology end-to-end. Then deleting most of it was the right next move.
 
@@ -151,7 +151,7 @@ bin/lambda check                          # cron-friendly: terminates overdue in
 - State at `~/.lambda/state.json`. Each provision *eagerly* commits `max_hours × hourly_rate` to the ledger; teardown replaces the estimate with actual elapsed cost.
 - `would_exceed` check is plain arithmetic — provision is refused, not warned, if it would breach `LAMBDA_BUDGET_USD`.
 - A backgrounded nohup process schedules auto-teardown at the per-instance deadline. Run `bin/lambda check` via cron for full safety against the rare case of the nohup dying before deadline.
-- Ports the useful subset of the original harness's `cloud/` code (preserved at `.archive/research-builder-v1/src/research_builder/cloud/`); drops the LLM-driven `needs_gpu` classifier and Claude Agent SDK dependency. ~400 LoC of stdlib Python (uses `urllib`, no `httpx`).
+- Ports the useful subset of the original harness's `cloud/` code (preserved at `custom-harness/src/research_builder/cloud/`); drops the LLM-driven `needs_gpu` classifier and Claude Agent SDK dependency. ~400 LoC of stdlib Python (uses `urllib`, no `httpx`).
 
 ## Tests
 
@@ -162,4 +162,4 @@ cd papers/attention-is-all-you-need
 uv run --project ../.. pytest tests/ -v
 ```
 
-15 unit tests over the transformer (attention shapes + mask semantics, PE formula, model forward, gradient flow). CI runs them + an `--overfit-one-batch` assertion (final loss must be < 0.05 with LS=0) on every push. The original harness's 137 tests are preserved at `.archive/research-builder-v1/tests/` but no longer run in CI.
+32 unit tests across attention/positional/transformer/tokenize/wmt/eval. CI runs them + an `--overfit-one-batch` assertion (final loss must be < 0.05 with LS=0) on every push. The original harness's 137 tests are preserved at [`custom-harness/tests/`](custom-harness/tests/) but no longer run in CI.

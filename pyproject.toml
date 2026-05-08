@@ -20,6 +20,6 @@ dependencies = [
 # bin/lambda is also stdlib-only.
 #
 # The original 9.5k LoC harness lived under src/research_builder/ and is now
-# preserved at .archive/research-builder-v1/. Its dependencies (claude-agent-sdk,
+# preserved at custom-harness/. Its dependencies (claude-agent-sdk,
 # textual, prompt-toolkit, sentence-transformers, click, rich, etc.) are NOT
 # part of this toolkit env; checkout commit 90076ce or earlier to resurrect.

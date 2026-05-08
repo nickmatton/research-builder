@@ -25,11 +25,9 @@ report/
 canonical_spec.bak.*/
 phases.bak.*/
 
-# Archived / large scratch (e.g. 4GB .archive/ run snapshots) — but keep
-# the README + the frozen-but-tracked v1 harness source visible.
-.archive/*
-!.archive/README.md
-!.archive/research-builder-v1/
+# Old harness run snapshots (4GB+ of timestamped run dirs from the harness era).
+# The harness source itself lives at custom-harness/ (tracked); this is just runtime junk.
+.archive/
 
 # Per-paper scratch dirs (pre-migration; replaced by papers/<slug>/ later)
 attentionisallyouneed/

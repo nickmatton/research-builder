@@ -25,7 +25,7 @@ Env:
     LAMBDA_REGION        default us-east-1
 
 Ports the useful subset of the archived harness's
-.archive/research-builder-v1/src/research_builder/cloud/ — dropping the
+custom-harness/src/research_builder/cloud/ — dropping the
 LLM-driven needs_gpu classifier, async/sub-agent hooks, and
 claude_agent_sdk dependency. Sync HTTP via stdlib urllib (no httpx).
 """

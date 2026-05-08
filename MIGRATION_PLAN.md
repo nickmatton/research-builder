@@ -51,7 +51,7 @@ research-builder/                  # this repo, the template + methodology sourc
 │   ├── configs/.gitkeep
 │   ├── src/.gitkeep
 │   └── tests/.gitkeep
-└── .archive/research-builder-v1/  # the old harness, frozen for reference (Phase 4)
+└── custom-harness/                # the original 9.5k LoC harness, frozen for reference (Phase 4)
 ```
 
 A new paper:
@@ -85,7 +85,7 @@ Each phase has explicit success criteria. Don't proceed until the previous phase
 
 ### Phase 1 — Extract methodology artifacts (preserve before delete)
 
-Pull the *content* out of the harness before it goes to `.archive/`. No deletes yet.
+Pull the *content* out of the harness before it goes to `custom-harness/`. No deletes yet.
 
 - [ ] Extract claims schema from `src/research_builder/models/claims.py` → `paper-template/notes/claims.md` template + `mcp/claims_server.py` design notes
 - [ ] Extract verification-ladder pattern from `src/research_builder/orchestrator/loop.py` and tests → `skills/verification-ladder.md`
@@ -128,12 +128,12 @@ The existing test paper is the proving ground. Reproduce it with the *new* appro
 
 Only after Phase 3 gate is green.
 
-- [ ] Move `src/research_builder/orchestrator/` → `.archive/research-builder-v1/orchestrator/`
-- [ ] Move `src/research_builder/sub_agent/` → `.archive/`
-- [ ] Move `src/research_builder/storage/` → `.archive/`
-- [ ] Move `src/research_builder/viewer/` → `.archive/`
-- [ ] Move `src/research_builder/{events,commands,resume,chat,console,ui,interaction,main}.py` → `.archive/`
-- [ ] Move `src/research_builder/{cloud,literature,rag}/` → `.archive/` (revisit later — may have reusable parts)
+- [ ] Move `src/research_builder/orchestrator/` → `custom-harness/orchestrator/`
+- [ ] Move `src/research_builder/sub_agent/` → `custom-harness/`
+- [ ] Move `src/research_builder/storage/` → `custom-harness/`
+- [ ] Move `src/research_builder/viewer/` → `custom-harness/`
+- [ ] Move `src/research_builder/{events,commands,resume,chat,console,ui,interaction,main}.py` → `custom-harness/`
+- [ ] Move `src/research_builder/{cloud,literature,rag}/` → `custom-harness/` (revisit later — may have reusable parts)
 - [ ] Keep `src/research_builder/models/claims.py` if MCP server reuses it; otherwise archive
 - [ ] Update `pyproject.toml` — drop CLI entry points, drop unused deps
 - [ ] Update `README.md` — new architecture, new workflow
@@ -156,7 +156,7 @@ Only after Phase 3 gate is green.
 ## What we are explicitly NOT doing
 
 - **No backwards compatibility shims.** The old CLI dies; users (you) move to the new workflow.
-- **No data migration.** Existing `canonical_spec/`, `phases/`, `logs/`, etc. stay where they are; can be referenced from `.archive/` or wiped after Phase 3.
+- **No data migration.** Existing `canonical_spec/`, `phases/`, `logs/`, etc. stay where they are; can be referenced from `custom-harness/` or wiped after Phase 3.
 - **No "research-builder as a library"** that paper repos import. The toolkit is templates + skills + MCP servers — *files copied or referenced*, not Python code imported.
 - **No GUI / TUI viewer port.** Claude Code's TUI is the viewer.
 - **No retry state machine.** Claude Code session + `/loop` + plan mode covers this.
@@ -171,7 +171,7 @@ Only after Phase 3 gate is green.
 | Native approach actually worse on real paper | Phase 3 gate is explicit. If it fails, we revisit hybrid scope before archiving. |
 | Lose audit trail (events.jsonl, etc.) | Hooks-based journaling + git history + Claude Code transcripts cover most of it. Document the gap. |
 | Reproducibility regression (no revision_log.yaml) | journal.md + git is the new revision log. Encode the discipline in the template. |
-| Cloud / GPU provisioning (cloud/) lost | Out of scope for v1. Keep `.archive/cloud/` for reference; reintroduce as MCP server later if needed. |
+| Cloud / GPU provisioning (cloud/) lost | Out of scope for v1. Keep `custom-harness/src/research_builder/cloud/` for reference; reintroduce as MCP server later if needed. |
 | Test coverage drops | Tests for archived modules go away with them; tests for MCP servers added in Phase 2. Net coverage probably down — that's fine, surface area is much smaller. |
 | WIP work uncommitted on main | Commit a WIP checkpoint on main before merging this branch back. Phase 0 task. |
 
@@ -185,7 +185,7 @@ Only after Phase 3 gate is green.
 | 1 | 2–3 hr (mostly reading + extracting) | Trivial (no deletes) |
 | 2 | 1–2 days (MCP servers + templates + skills) | Easy (new code, additive) |
 | 3 | 1 day (real paper run) | Easy (paper repo is separate dir) |
-| 4 | 2–3 hr | **Destructive** — but `.archive/` keeps it recoverable |
+| 4 | 2–3 hr | **Destructive** — but `custom-harness/` keeps it recoverable |
 | 5 | Half-day + ongoing | Easy |
 
 Total: roughly a week of focused work to a green Phase 4. Phase 5 is continuous.
@@ -194,7 +194,7 @@ Total: roughly a week of focused work to a green Phase 4. Phase 5 is continuous.
 
 ## Decision point
 
-Phases 0–3 are safe (no destructive changes). Phase 4 is the irreversible one (modulo `.archive/`).
+Phases 0–3 are safe (no destructive changes). Phase 4 is the irreversible one (modulo `custom-harness/`).
 
 Confirm:
 1. The end-state architecture (paper-template + mcp + skills + commands + archive)
