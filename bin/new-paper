@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# new-paper — scaffold a new paper repo from paper-template/.
+# new-paper — scaffold a new paper repo by composing four toolkit-root sources.
 #
 #   bin/new-paper <slug> [destination-dir] [path/to/paper.pdf]
 #
@@ -8,12 +8,20 @@
 #   bin/new-paper bert ~/papers/bert        # without PDF; drop it manually later
 #   bin/new-paper bert                       # → papers/bert/ inside this repo
 #
+# Composition (the per-paper repo is a layered copy of the toolkit's masters):
+#   paper-skeleton/   →  <dest>/                                (placeholders + paper-specific shell scripts)
+#   skills/           →  <dest>/.claude/skills/                 (methodology — verification-ladder, post-mortem, ...)
+#   commands/         →  <dest>/.claude/commands/               (slash commands — /reproduce, /compare, ...)
+#   tools/            →  <dest>/scripts/                        (reusable Python helpers — compare-claims, ...)
+#
 # After scaffolding:
 #   1. cd into the new paper repo
 #   2. Drop a PDF at paper/paper.pdf if you didn't pass one
-#   3. uv pip install pdfplumber pyyaml httpx torch  (or your env's equivalent)
-#   4. python scripts/extract-paper-text.py
-#   5. claude .  # then: "read paper/paper.txt and fill in CLAUDE.md + notes/claims.yaml"
+#   3. uv sync                              # installs per-paper deps from pyproject.toml
+#   4. python scripts/extract-paper-text.py # → paper/paper.txt
+#   5. claude .                             # interactive skill-path workflow
+#      OR
+#      bin/research-builder <dest>          # autonomous harness workflow (from the toolkit root)
 set -euo pipefail
 
 if [ $# -lt 1 ]; then
@@ -26,24 +34,42 @@ DEST="${2:-papers/${SLUG}}"
 PDF_PATH="${3:-}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TEMPLATE="${REPO_ROOT}/paper-template"
+SKELETON="${REPO_ROOT}/paper-skeleton"
+SKILLS="${REPO_ROOT}/skills"
+COMMANDS="${REPO_ROOT}/commands"
+TOOLS="${REPO_ROOT}/tools"
 
-if [ ! -d "${TEMPLATE}" ]; then
-    echo "error: ${TEMPLATE} not found" >&2
-    exit 1
-fi
+for src in "${SKELETON}" "${SKILLS}" "${COMMANDS}" "${TOOLS}"; do
+    if [ ! -d "${src}" ]; then
+        echo "error: toolkit source missing: ${src}" >&2
+        exit 1
+    fi
+done
 
 if [ -e "${DEST}" ]; then
     echo "error: ${DEST} already exists" >&2
     exit 1
 fi
 
-echo "[new-paper] copying template → ${DEST}"
-cp -r "${TEMPLATE}" "${DEST}"
+# Layer 1: skeleton (placeholders + paper-specific shells)
+echo "[new-paper] paper-skeleton/ → ${DEST}/"
+cp -r "${SKELETON}" "${DEST}"
 
-# Replace placeholder <PAPER TITLE> with the slug as a starting point.
+# Layer 2: methodology + commands → .claude/
+echo "[new-paper] skills/ → ${DEST}/.claude/skills/"
+mkdir -p "${DEST}/.claude"
+cp -r "${SKILLS}" "${DEST}/.claude/skills"
+echo "[new-paper] commands/ → ${DEST}/.claude/commands/"
+cp -r "${COMMANDS}" "${DEST}/.claude/commands"
+
+# Layer 3: reusable Python tools → scripts/ (alongside paper-specific shell scripts)
+echo "[new-paper] tools/*.py → ${DEST}/scripts/"
+cp "${TOOLS}"/*.py "${DEST}/scripts/"
+
+# Replace placeholders in CLAUDE.md and pyproject.toml with the slug.
 sed -i.bak "s|<PAPER TITLE>|${SLUG}|g" "${DEST}/CLAUDE.md"
-rm "${DEST}/CLAUDE.md.bak"
+sed -i.bak "s|<slug>|${SLUG}|g" "${DEST}/pyproject.toml"
+rm "${DEST}/CLAUDE.md.bak" "${DEST}/pyproject.toml.bak"
 
 if [ -n "${PDF_PATH}" ]; then
     if [ ! -f "${PDF_PATH}" ]; then
@@ -63,6 +89,8 @@ echo "  cd ${DEST}"
 if [ -z "${PDF_PATH}" ]; then
     echo "  mkdir -p paper && cp /path/to/paper.pdf paper/paper.pdf"
 fi
-echo "  uv pip install pdfplumber pyyaml httpx torch"
-echo "  python scripts/extract-paper-text.py"
-echo "  claude ."
+echo "  uv sync                              # per-paper Python env"
+echo "  python scripts/extract-paper-text.py # PDF → paper/paper.txt"
+echo "  claude .                             # interactive (skill workflow)"
+echo "  # OR (from the toolkit root):"
+echo "  bin/research-builder ${DEST}         # autonomous (harness workflow)"

@@ -1,0 +1,35 @@
+[project]
+# Replace <slug> with the paper's short identifier (matches the directory name).
+name = "<slug>-reproduction"
+version = "0.1.0"
+description = "Reproduction of <Author et al., Year> — <Paper Title>"
+requires-python = ">=3.11"
+dependencies = [
+    # Helpers used by tools/scripts/ (compare-claims.py, extract-paper-text.py)
+    "pyyaml>=6.0",
+    "pdfplumber>=0.11",
+    # ML stack — drop / swap as your paper requires.
+    "torch>=2.0",
+    # Test runner. Kept in primary deps (not optional) so `uv sync` is enough.
+    "pytest>=8.0",
+
+    # === Likely additions per paper-type — uncomment as needed ===
+    # NLP / sequence modeling:
+    # "datasets>=3.0",      # HuggingFace datasets (WMT, GLUE, ...)
+    # "tokenizers>=0.20",   # BPE / wordpiece
+    # "sacrebleu>=2.0",     # BLEU for machine translation
+    # "rouge-score>=0.1",   # ROUGE for summarization
+    # Vision:
+    # "torchvision>=0.18",
+    # "pillow>=10.0",
+    # RL:
+    # "gymnasium>=1.0",
+    # Generic ML:
+    # "scikit-learn>=1.5",
+    # "numpy>=2.0",
+    # "scipy>=1.14",
+    # "matplotlib>=3.9",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

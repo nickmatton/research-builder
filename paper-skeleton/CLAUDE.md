@@ -63,6 +63,7 @@ Use `scripts/smoke.sh` before anything full-scale. Always.
 
 ```bash
 # One-time setup after dropping the PDF
+uv sync                                  # install per-paper deps from pyproject.toml
 python scripts/extract-paper-text.py     # → paper/paper.txt for Read/Grep
 
 # Verification ladder — run in order
@@ -75,10 +76,18 @@ bash scripts/reproduce.sh                # 4. full reproduction
 python scripts/compare-claims.py runs/<run-id>/metrics.json
 
 # Look up a cited paper (Semantic Scholar)
-python scripts/lookup-citation.py "Attention Is All You Need"
+python scripts/lookup-citation.py "<paper title>"
 ```
 
-Tooling: Claude reads/greps `paper/paper.txt` directly with built-in tools. No MCP servers, no toolkit install — just three Python scripts in `scripts/` and the standard Claude Code tool set.
+## Two interfaces, same paper repo
+
+This repo can be driven by **either** of two equivalent interfaces:
+
+- **Claude Code skill workflow (interactive).** Open `claude .` in this directory, invoke `/reproduce`, `/compare`, `/verify`, `/post-mortem` slash commands. You drive with judgment at each rung of the verification ladder. Slash commands live at `.claude/commands/` (copied from the toolkit's `commands/`). Methodology rules at `.claude/skills/` (copied from `skills/`).
+
+- **Custom harness workflow (autonomous).** From the toolkit root, run `bin/research-builder <this-paper-repo>`. Drives unattended; reads this `CLAUDE.md` + `notes/claims.yaml` as inputs, writes to `notes/journal.md`, `notes/post-mortems/`, and `runs/<run-id>/`. Same artifacts a human-driven session produces.
+
+Either workflow can pick up where the other left off — same files.
 
 ## Workflow expectations
 
