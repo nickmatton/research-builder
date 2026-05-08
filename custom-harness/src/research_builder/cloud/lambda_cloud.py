@@ -27,8 +27,16 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-LAMBDA_BASE_URL = "https://cloud.lambdalabs.com/api/v1"
+LAMBDA_BASE_URL = "https://cloud.lambda.ai/api/v1"
+# Lambda migrated the API host from cloud.lambdalabs.com → cloud.lambda.ai;
+# the old host returns 301 and httpx may drop Authorization on redirect.
+# Hit the new host directly. Mirror of the fix in toolkit-root bin/lambda.
+
 DEFAULT_SSH_USER = "ubuntu"
+USER_AGENT = "research-builder-harness/1.0 (+https://github.com/nickmatton/research-builder)"
+# Lambda's API host sits behind Cloudflare which blocks the default
+# httpx User-Agent ("python-httpx/x.x") with HTTP 403 "error code: 1010".
+# Setting an explicit identifiable UA gets us through.
 
 
 @dataclass
@@ -74,6 +82,7 @@ class LambdaClient:
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
             },
             timeout=httpx.Timeout(60.0),
         )

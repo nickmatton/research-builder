@@ -22,7 +22,9 @@ from claude_agent_sdk import tool, create_sdk_mcp_server
 
 from ..literature.scholar import SemanticScholarClient
 from ..llm.paper import extract_pages, get_page_count
-from ..rag.index import PaperIndex
+# rag.index pulls in torch (~2 GB). Defer to runtime so the harness can run
+# headless without the optional [rag] extra. PaperIndex is only used inside
+# search_paper which itself short-circuits if the index isn't built.
 
 
 # Async callable signature for the request_compute upgrade hook.
@@ -180,8 +182,9 @@ def create_phase_tools(
         return {"content": [{"type": "text", "text": f"Result recorded to {result_path}. You may stop now."}]}
 
     # --- search_paper: semantic search over the paper ---
-    # Load the pre-built index once (lazy, on first tool call).
-    _paper_index: PaperIndex | None = None
+    # Load the pre-built index once (lazy, on first tool call). Type is Any so
+    # we don't import torch-backed PaperIndex at module load.
+    _paper_index: Any | None = None
     _index_path = spec_dir / "paper_index.pkl" if spec_dir is not None else None
 
     @tool(
@@ -221,6 +224,7 @@ def create_phase_tools(
                     "is_error": True,
                 }
             try:
+                from ..rag.index import PaperIndex   # deferred — needs torch
                 _paper_index = PaperIndex.load(_index_path)
             except Exception as e:
                 return {

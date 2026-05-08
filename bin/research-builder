@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# research-builder — autonomous-harness CLI entry point.
+#
+# Wraps `python -m research_builder.main` from the custom-harness/ project.
+# Requires `uv sync` inside custom-harness/ to have run once first.
+#
+# Usage:
+#   bin/research-builder <paper-repo>                  # extend an existing paper repo
+#   bin/research-builder <paper.pdf> --output <dir>    # scaffold + run end-to-end
+#   bin/research-builder --help
+#
+# See custom-harness/README.md for the full interface.
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HARNESS_DIR="${REPO_ROOT}/custom-harness"
+
+if [ ! -d "${HARNESS_DIR}" ]; then
+    echo "error: ${HARNESS_DIR} not found" >&2
+    exit 1
+fi
+
+if [ ! -d "${HARNESS_DIR}/.venv" ]; then
+    echo "error: harness env not installed. Run:" >&2
+    echo "  cd ${HARNESS_DIR} && uv sync" >&2
+    exit 1
+fi
+
+cd "${HARNESS_DIR}"
+exec uv run python -m research_builder.main "$@"
