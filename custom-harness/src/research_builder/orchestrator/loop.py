@@ -168,6 +168,36 @@ class ExecutionLoop:
                 "provision is requested. You can also approve up-front by passing --gpu-budget."
             )
 
+    def _project_run_complete(self, success: bool) -> None:
+        """Append a final summary row to <project_root>/notes/journal.md."""
+        try:
+            import time
+            from ..storage.paper_repo import project_run_complete
+            duration = time.time() - getattr(self, "_run_started_at", time.time())
+            project_run_complete(
+                self.config,
+                run_id=getattr(self, "_run_id", "harness-unknown"),
+                state=self.spec_manager.state,
+                total_cost_usd=self.total_cost_usd,
+                duration_seconds=duration,
+            )
+        except Exception:
+            logger.exception("Failed to project run-complete journal row; continuing")
+
+    def _project_phase_outcome(self, phase_id: str, result: SubAgentResult, duration_seconds: float | None) -> None:
+        """Append a per-phase row to <project_root>/notes/journal.md."""
+        try:
+            from ..storage.paper_repo import project_phase_complete
+            project_phase_complete(
+                self.config,
+                phase_id=phase_id,
+                result=result,
+                duration_seconds=duration_seconds,
+                run_id=getattr(self, "_run_id", None),
+            )
+        except Exception:
+            logger.exception("Failed to project phase-complete journal row for %s; continuing", phase_id)
+
     def _emit_orchestrator_completed(self, status: str, summary: str) -> None:
         """Mark the orchestrator agent as finished in the event stream.
 
@@ -186,7 +216,10 @@ class ExecutionLoop:
 
     async def run(self) -> bool:
         """Execute all phases. Returns True if the run completed successfully."""
+        import time
         logger.info("Starting execution loop")
+        self._run_id = f"harness-{time.strftime('%Y%m%d-%H%M%S')}"
+        self._run_started_at = time.time()
 
         # Upfront GPU spend estimate (only if a cloud provisioner is wired).
         # Walks every phase through the classifier once and surfaces the
@@ -204,6 +237,7 @@ class ExecutionLoop:
                 self.spec_manager.log_event(EventType.run_completed, rationale="All phases completed")
                 logger.info("All phases completed successfully")
                 self._generate_claims_summary()
+                self._project_run_complete(success=True)
                 self._emit_orchestrator_completed("completed", "All phases completed")
                 return True
 
@@ -219,6 +253,7 @@ class ExecutionLoop:
                     rationale=f"Phases exhausted all retries: {failed_ids}",
                 )
                 logger.error("Run failed — phases exhausted retries: %s", failed_ids)
+                self._project_run_complete(success=False)
                 self._emit_orchestrator_completed("failed", f"Phases exhausted retries: {failed_ids}")
                 return False
 
@@ -412,6 +447,10 @@ class ExecutionLoop:
 
             # Handle result (includes acceptance review)
             await self._handle_result(phase_id, result)
+
+            # Append per-phase row to <project_root>/notes/journal.md so the
+            # Claude Code skill workflow can see the harness's progress.
+            self._project_phase_outcome(phase_id, result, duration_seconds=None)
         finally:
             # Signal console to stop, then wait for it to finish gracefully.
             # If the user has an editor/pager open, this waits for them to
@@ -702,6 +741,19 @@ class ExecutionLoop:
             path.write_text(body)
         except Exception:
             logger.exception("Failed to write post-mortem to %s", path)
+
+        # Project to paper-repo shape (notes/post-mortems/<phase>-retry-<N>.md)
+        # so the Claude Code skill workflow's /post-mortem can find it too.
+        try:
+            from ..storage.paper_repo import project_post_mortem
+            project_post_mortem(
+                self.config,
+                phase_id=phase_id,
+                retry_num=retry_num,
+                internal_path=path,
+            )
+        except Exception:
+            logger.exception("Failed to project post-mortem to paper-repo shape; continuing")
 
         # Stash for the next attempt (if any).
         if not final:

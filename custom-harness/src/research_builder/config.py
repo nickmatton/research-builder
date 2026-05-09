@@ -63,3 +63,37 @@ class Config:
     def context_dir(self) -> Path:
         """Per-attempt snapshots of what each sub-agent actually saw (system_prompt, sub_spec, kickoff)."""
         return self.project_root / "context"
+
+    # ---- paper-repo–shape paths (Phase 2 of the dual-interface refactor) ----
+    # These are the user-facing artifacts that match what the Claude Code
+    # skill workflow produces. The internal harness still writes its own
+    # canonical_spec/+phases/ format above; the paper-repo projection writes
+    # to these alongside, so either interface can read either.
+
+    @property
+    def notes_dir(self) -> Path:
+        return self.project_root / "notes"
+
+    @property
+    def runs_dir(self) -> Path:
+        return self.project_root / "runs"
+
+    @property
+    def claude_md_path(self) -> Path:
+        """The user-facing reproduction spec — projection of canonical_spec/spec.md."""
+        return self.project_root / "CLAUDE.md"
+
+    @property
+    def journal_path(self) -> Path:
+        """Append-only run log — projection of canonical_spec/revision_log.yaml events."""
+        return self.notes_dir / "journal.md"
+
+    @property
+    def claims_yaml_path(self) -> Path:
+        """User-facing claims ledger — copy of canonical_spec/claims.yaml in skill-workflow shape."""
+        return self.notes_dir / "claims.yaml"
+
+    @property
+    def post_mortems_dir(self) -> Path:
+        """User-facing post-mortems — projection of logs/postmortems/<phase>/retry_N.md."""
+        return self.notes_dir / "post-mortems"
