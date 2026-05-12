@@ -52,7 +52,17 @@ logger = logging.getLogger(__name__)
 
 SPEC_CREATION_SYSTEM_PROMPT = """\
 You are an expert research paper analyst. Your job is to read a research paper and \
-produce two outputs that will guide a team of implementation agents:
+produce two outputs that will guide a team of implementation agents.
+
+## Reading the paper
+
+Use the **Read** tool on the paper PDF path you'll be given. Read tool supports \
+PDFs natively (preserves tables, figures, equations, layout). For papers ≤10 \
+pages you can read the whole thing in one Read call. For larger papers, use the \
+``pages`` parameter (e.g. ``pages="1-10"`` then ``pages="11-20"``); maximum 20 \
+pages per Read call. The page count for this paper is in the user prompt below.
+
+## Outputs you must produce
 
 1. **spec.md** — A rich markdown document that serves as the canonical interpretation \
 of the paper. It should contain:
@@ -123,6 +133,14 @@ CLAIMS_EXTRACTION_SYSTEM_PROMPT = """\
 You are extracting every numerical/quantitative claim from a research paper. \
 These claims will be stored in a structured ledger and verified automatically \
 when the paper's code is reproduced.
+
+## Reading the paper
+
+Use the **Read** tool on the paper PDF path in the user prompt. Read supports \
+PDFs natively (preserves tables, equations, figures). Tables are usually where \
+the headline numerical claims live — read those pages especially carefully. \
+For papers ≤10 pages, one Read call covers it; for larger, use ``pages`` \
+(max 20 per call). Page count is in the user prompt.
 
 Extract claims from:
 - Results tables (every row/column with a numeric metric)
@@ -305,23 +323,32 @@ class OrchestratorAgent:
                 title="Orchestrator",
             )
 
-        # Step 0 — Ingest paper
-        paper_text = extract_full_text(paper_path)
+        # Step 0 — Get page count so we can tell the LLM how to page Read calls
+        from ..llm.paper import get_page_count
+        try:
+            page_count = get_page_count(paper_path)
+        except Exception:
+            logger.exception("get_page_count failed; defaulting to 20")
+            page_count = 20
 
-        # Step 0.5 — Build literature context from cited papers
-        # Disabled: Semantic Scholar's unauthenticated API rate-limits
-        # aggressively under load. Re-enable once we add API key support.
-        # literature_block = await self._build_literature_context(paper_text, store)
-        literature_block = ""
-
-        # Step 1 — Draft spec.md (the long LLM call)
-        prompt_parts = [f"Here is the paper:\n\n{paper_text}"]
-        if literature_block:
-            prompt_parts.append(literature_block)
+        # Step 1 — Draft spec.md (the long LLM call). The orchestrator reads
+        # the paper PDF directly via the Read tool — preserves tables/figures/
+        # equations vs the old pdfplumber → text path.
+        absolute_paper_path = Path(paper_path).resolve()
+        prompt = (
+            f"Read the research paper at:\n  {absolute_paper_path}\n\n"
+            f"It has {page_count} pages. Use the Read tool with the ``pages`` "
+            f"parameter (max 20 pages per call) to read it. After reading, "
+            f"produce the JSON output specified in your system prompt."
+        )
         response_text = await self._query(
             system=SPEC_CREATION_SYSTEM_PROMPT,
-            prompt="\n\n".join(prompt_parts),
-            tools=[],  # Pure reasoning — no tools needed
+            prompt=prompt,
+            tools=["Read", "Bash", "Glob", "Grep"],
+            # Reading the paper takes several turns (multiple Read calls for
+            # large papers) before the JSON synthesis. Plus extended thinking.
+            max_turns=20,
+            timeout=600,
         )
 
         # Step 2 — Build phase DAG (parse + validate)
@@ -382,7 +409,7 @@ class OrchestratorAgent:
         logger.info("Spec created: %d phases, dependency_graph=%s", len(phases), dep_graph)
 
         # Step 4 — Extract claims ledger (second focused LLM pass)
-        claims_ledger = await self._extract_claims(paper_text, {p.phase_id for p in phases})
+        claims_ledger = await self._extract_claims(absolute_paper_path, page_count, {p.phase_id for p in phases})
         if claims_ledger.claims:
             store.save_claims(claims_ledger)
             logger.info("Claims ledger: %d claims extracted", len(claims_ledger.claims))
@@ -603,10 +630,14 @@ class OrchestratorAgent:
 
     async def _extract_claims(
         self,
-        paper_text: str,
+        paper_path: Path,
+        page_count: int,
         valid_phase_ids: set[str],
     ) -> ClaimsLedger:
         """Extract structured numerical claims from the paper (second LLM pass).
+
+        The orchestrator reads the PDF directly via Read tool — preserves
+        tables (where most headline numerical claims live).
 
         Best-effort: returns an empty ledger on any failure.
         """
@@ -618,13 +649,23 @@ class OrchestratorAgent:
                 text="Extracting numerical claims from paper...",
             )
 
+        prompt = (
+            f"Extract every numerical/quantitative claim from the research "
+            f"paper at:\n  {paper_path}\n\n"
+            f"It has {page_count} pages. Use the Read tool with ``pages`` "
+            f"(max 20 pages per call). Tables typically hold the headline "
+            f"claims — read those carefully. Return the JSON array specified "
+            f"in your system prompt."
+        )
         try:
             response_text = await self._query(
                 system=CLAIMS_EXTRACTION_SYSTEM_PROMPT,
-                prompt=f"Extract all numerical claims from this paper:\n\n{paper_text}",
-                tools=[],
-                max_turns=1,
+                prompt=prompt,
+                tools=["Read", "Bash", "Glob", "Grep"],
+                # Reading + extracting claims takes multiple turns.
+                max_turns=15,
                 prompt_role="claims-extraction",
+                timeout=600,
             )
         except Exception as e:
             logger.warning("Claims extraction LLM call failed: %s", e)
