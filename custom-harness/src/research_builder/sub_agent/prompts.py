@@ -18,21 +18,34 @@ and debug until everything works — then report your result.
 
 ## Your Tools
 
-- **read_file / write_file / edit_file**: Read and modify files in your workspace.
-- **bash**: Run shell commands (install packages, execute scripts, run tests). \
+- **Read / Write / Edit**: Read and modify files in your workspace. \
+**Read also supports the paper PDF natively** — see "Reading the paper" below.
+- **Bash**: Run shell commands (install packages, execute scripts, run tests). \
 Your working directory is the phase attempt directory.
-- **search_paper**: Semantically search the research paper for relevant passages. \
-Use this BEFORE read_paper_section — it finds the right pages for you by matching \
-your query against the paper's content. Returns chunks with page numbers and \
-section headings. Follow up with read_paper_section if you need more surrounding context.
-- **read_paper_section**: Read specific pages from the research paper PDF. \
-Use this for targeted lookup when you know the page number, or to get more \
-context around results from search_paper.
+- **Glob / Grep**: Find files / search file contents. Useful for navigating \
+the workspace and your previously-written code on retry.
+- **search_paper** *(only if paper search index was built — depends on the \
+``[rag]`` extra; otherwise this tool short-circuits to a fallback message)*: \
+Semantically search the paper for relevant passages by topic.
 - **lookup_citation**: Look up a cited paper by title via Semantic Scholar. \
-Returns the paper's abstract and key metadata. Use this when the spec or paper \
-references a method, dataset, or technique from another paper (e.g. "we follow \
-the preprocessing of Smith et al.") and you need implementation details.
+Returns abstract and metadata. Use when the spec or paper references a method \
+from another paper (e.g. "we follow the preprocessing of Smith et al.").
 - **report_result**: Submit your final result when done. This ends your session.
+
+## Reading the paper
+
+The paper PDF path is in your sub-spec under ``Paper`` below. Use the **Read** \
+tool with the ``pages`` parameter to read specific page ranges:
+
+```
+Read /path/to/paper.pdf pages="3-5"      # for targeted lookup
+Read /path/to/paper.pdf                  # for ≤10pp papers
+```
+
+Read supports PDFs natively and **preserves tables, figures, equations, and \
+column layout** — important for academic papers where the headline numbers \
+live in tables. Maximum 20 pages per Read call. Read only the pages you need; \
+don't re-read the whole paper for every question.
 
 ## Workflow
 
@@ -209,8 +222,14 @@ def _format_sub_spec(sub_spec: SubSpec) -> str:
 
     # Paper location
     if sub_spec.paper_path:
-        lines.append(f"\n### Paper\nAvailable at: `{sub_spec.paper_path}`")
-        lines.append("Use `search_paper` to find relevant passages by topic, then `read_paper_section` for full page context.")
+        lines.append(f"\n### Paper\nPDF path: `{sub_spec.paper_path}`")
+        lines.append(
+            "Use the **Read** tool with ``pages=\"N-M\"`` for targeted page "
+            "ranges (preserves tables/figures/equations). Only read what you "
+            "need — your spec already names the relevant sections under "
+            "*Detailed Spec* below. Optionally use search_paper for semantic "
+            "search if the index was built."
+        )
 
     # Spec markdown (the rich content from spec.md)
     if sub_spec.spec_markdown:

@@ -127,7 +127,9 @@ class ExecutionLoop:
         if provisioner is None:
             return
         sub_specs = []
-        paper_path = str(self.config.paper_path)
+        # Resolve to absolute — sub-agents run in their own phase work-dir,
+        # so a relative paper_path won't resolve. Read tool needs absolute.
+        paper_path = str(Path(self.config.paper_path).resolve())
         for phase in self.spec_manager.state.phases:
             try:
                 sub_specs.append(self.spec_manager.extract_sub_spec(phase.phase_id, paper_path=paper_path))
@@ -290,7 +292,9 @@ class ExecutionLoop:
         self._update_plan_for_phase(phase_id, PhaseStatus.in_progress)
 
         # Build sub-spec and retry context
-        paper_path = str(self.config.paper_path)
+        # Resolve to absolute — sub-agents run in their own phase work-dir,
+        # so a relative paper_path won't resolve. Read tool needs absolute.
+        paper_path = str(Path(self.config.paper_path).resolve())
         sub_spec = self.spec_manager.extract_sub_spec(phase_id, paper_path=paper_path)
 
         retry_context = None
