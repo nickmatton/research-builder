@@ -16,8 +16,10 @@ class Config:
     # Project root (all outputs written under here)
     project_root: Path = Path(".")
 
-    # Model
-    model: str = "claude-opus-4-6"
+    # Model — defaulting to Haiku for fast/cheap test iteration. Bump to
+    # claude-opus-4-7 (or claude-sonnet-4-6) for real reproductions where
+    # sub-agent code-quality matters. Override per-run with --model.
+    model: str = "claude-haiku-4-5-20251001"
 
     # Orchestrator budgets
     max_retries: int = 3
