@@ -551,9 +551,12 @@ class OrchestratorAgent:
             system=ACCEPTANCE_REVIEW_SYSTEM_PROMPT,
             prompt=f"Review this phase result:\n\n```json\n{json.dumps(review_context, indent=2)}\n```",
             tools=["Read", "Bash", "Glob", "Grep"],
-            max_turns=3,
+            # Bumped 3 → 12. Opus extended thinking burns turns on thinking
+            # blocks before producing the JSON verdict — 3 turns guarantees
+            # max_turns errors and triggers the doom loop downstream.
+            max_turns=12,
             prompt_role=f"subagent-{phase_id}",
-            timeout=180,
+            timeout=300,
         )
         logger.info("Acceptance review LLM call completed for phase=%s (%d chars)", phase_id, len(response_text))
 
@@ -774,7 +777,9 @@ class OrchestratorAgent:
                 system=SPEC_REFINEMENT_SYSTEM_PROMPT,
                 prompt=prompt,
                 tools=["Read", "Bash", "Glob", "Grep"],
-                max_turns=6,
+                # Bumped 6 → 15. Spec refinement reads paper + emits a full
+                # amended spec; needs more headroom on opus extended thinking.
+                max_turns=15,
                 prompt_role=f"refine-spec-{phase_id}",
             )
         except Exception as e:
@@ -839,7 +844,11 @@ class OrchestratorAgent:
                 system=POST_MORTEM_SYSTEM_PROMPT,
                 prompt=prompt,
                 tools=["Read", "Bash", "Glob", "Grep"],
-                max_turns=4,
+                # Bumped 4 → 12. Same extended-thinking issue as
+                # acceptance_review — 4 turns guarantees max_turns errors and
+                # the harness loops through SDK retries × phase retries
+                # (~hours wasted per phase failure).
+                max_turns=12,
                 prompt_role=f"postmortem-{phase_id}",
             )
         except Exception as e:
@@ -874,7 +883,11 @@ class OrchestratorAgent:
         self,
         system: str,
         prompt: str,
-        max_retries: int = 3,
+        # Reduced 3 → 1. SDK-level retries compound with phase-level retries
+        # in FailureHandler (default 3) — worst case 3×3 = 9 full re-runs of a
+        # phase on transient failures. The phase retry already re-dispatches
+        # the sub-agent fresh, so SDK retries here are double-counting.
+        max_retries: int = 1,
         tools: list[str] | None = None,
         max_turns: int = 1,
         emit_messages: bool = True,
