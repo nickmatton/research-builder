@@ -35,9 +35,10 @@ dependencies = [
 # we don't need to land headless mode).
 tui = ["textual>=0.79", "prompt-toolkit>=3.0"]
 
-# Pre-built paper search index used by sub-agents (search_paper MCP tool).
-# Heavy install (~2 GB with torch); enable only if you want RAG on the paper.
-rag = ["torch>=2.0", "sentence-transformers>=3.0"]
+# (Removed): The [rag] extra used to install torch + sentence-transformers for
+# the search_paper MCP tool. Sub-agents now use the built-in Read tool with
+# the ``pages`` parameter for selective PDF access (preserves tables, figures,
+# equations) — semantic search no longer needed.
 
 [project.scripts]
 research-builder = "research_builder.main:cli"

@@ -435,21 +435,6 @@ class OrchestratorAgent:
         except Exception:
             logger.exception("Failed to project spec/claims to paper-repo shape; continuing")
 
-        # Step 5 — Build paper search index for sub-agent semantic search.
-        # Optional: requires the [rag] extra (torch + sentence-transformers).
-        # Skip with a warning if not installed; sub-agents can still use
-        # read_paper_section + lookup_citation.
-        try:
-            from ..rag.agent import build_paper_index
-            build_paper_index(paper_path, store.spec_dir)
-        except ImportError as e:
-            logger.warning(
-                "Paper search index skipped — install custom-harness[rag] for semantic search "
-                "in sub-agents (got: %s)", e,
-            )
-        except Exception:
-            logger.exception("build_paper_index failed; sub-agents will use page-based reads only")
-
         # NB: do NOT emit agent_completed here. The orchestrator stays
         # alive supervising every phase — completion is signalled from
         # ExecutionLoop.run() once the entire run finishes.

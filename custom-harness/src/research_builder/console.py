@@ -17,7 +17,6 @@ import click
 
 from . import ui
 from .config import Config
-from .sub_agent.tools import create_paper_tools
 
 logger = logging.getLogger(__name__)
 
@@ -216,7 +215,6 @@ class InteractiveConsole:
         ui.info("The sub-agent continues working in the background.\n")
 
         session = PromptSession()
-        paper_tools = create_paper_tools(self.config.paper_path)
 
         try:
             while True:
@@ -243,7 +241,7 @@ class InteractiveConsole:
 
                 ui.info("Thinking...")
                 try:
-                    response = await self._chat_query(conversation, paper_tools)
+                    response = await self._chat_query(conversation)
                 except Exception as e:
                     logger.error("Chat query failed: %s", e)
                     response = f"Error: {e}"
@@ -262,7 +260,7 @@ class InteractiveConsole:
             self._init_display()
             self._paused = False
 
-    async def _chat_query(self, conversation: str, paper_tools) -> str:
+    async def _chat_query(self, conversation: str) -> str:
         """Send a chat message to the Claude agent and return the response."""
         from .chat import chat_query
 
@@ -273,6 +271,6 @@ class InteractiveConsole:
             conversation=conversation,
             spec_path=self.spec_path,
             model=self.config.model,
-            paper_tools=paper_tools,
+            paper_path=self.config.paper_path,
             on_tool=on_tool,
         )

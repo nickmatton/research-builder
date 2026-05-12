@@ -20,12 +20,14 @@ _CHAT_SYSTEM_PROMPT = """\
 You are a research assistant helping a user understand a research paper and \
 refine an implementation spec. You have access to:
 
-1. The research paper (via the read_paper_section tool — specify page numbers)
-2. The implementation spec at: {spec_path}
-3. Standard file tools (Read, Edit, Glob, Grep) to view and modify the spec
+1. The research paper at: {paper_path} (use the **Read** tool with the \
+``pages`` parameter — Read supports PDFs natively and preserves tables, \
+figures, equations).
+2. The implementation spec at: {spec_path} (use Read / Edit on this file).
+3. Standard file tools (Glob, Grep) to navigate the workspace.
 
-When the user asks about the paper, read the relevant sections and answer.
-When the user asks you to change the spec, edit the spec.md file directly.
+When the user asks about the paper, Read the relevant pages and answer.
+When the user asks you to change the spec, Edit the spec file directly.
 Keep answers concise and direct.
 """
 
@@ -34,7 +36,7 @@ async def chat_query(
     conversation: str,
     spec_path: Path,
     model: str,
-    paper_tools: dict,
+    paper_path: Path,
     on_tool: callable | None = None,
     on_token: callable | None = None,
 ) -> str:
@@ -44,22 +46,20 @@ async def chat_query(
         conversation: The full conversation text to send.
         spec_path: Path to the spec.md file.
         model: Model name to use.
-        paper_tools: MCP server config for paper tools.
+        paper_path: Path to the paper PDF (read directly via the Read tool).
         on_tool: Optional callback for tool use display (called with tool name).
         on_token: Optional callback fired with each TextBlock as it streams in.
     """
-    system = _CHAT_SYSTEM_PROMPT.format(spec_path=spec_path)
+    system = _CHAT_SYSTEM_PROMPT.format(
+        spec_path=spec_path, paper_path=Path(paper_path).resolve(),
+    )
 
     options = ClaudeAgentOptions(
         system_prompt=system,
         model=model,
         permission_mode="bypassPermissions",
         cwd=str(spec_path.parent),
-        allowed_tools=[
-            "Read", "Edit", "Glob", "Grep",
-            "mcp__paper_tools__read_paper_section",
-        ],
-        mcp_servers={"paper_tools": paper_tools},
+        allowed_tools=["Read", "Edit", "Glob", "Grep"],
         max_turns=10,
     )
 
@@ -72,9 +72,8 @@ async def chat_query(
                         on_token(block.text)
                     result_text += block.text
                 elif isinstance(block, ToolUseBlock):
-                    tool_name = block.name.replace("mcp__paper_tools__", "")
                     if on_tool:
-                        on_tool(tool_name)
+                        on_tool(block.name)
         elif isinstance(message, ResultMessage):
             if message.result:
                 result_text = message.result

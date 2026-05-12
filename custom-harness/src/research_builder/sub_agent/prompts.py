@@ -24,9 +24,6 @@ and debug until everything works — then report your result.
 Your working directory is the phase attempt directory.
 - **Glob / Grep**: Find files / search file contents. Useful for navigating \
 the workspace and your previously-written code on retry.
-- **search_paper** *(only if paper search index was built — depends on the \
-``[rag]`` extra; otherwise this tool short-circuits to a fallback message)*: \
-Semantically search the paper for relevant passages by topic.
 - **lookup_citation**: Look up a cited paper by title via Semantic Scholar. \
 Returns abstract and metadata. Use when the spec or paper references a method \
 from another paper (e.g. "we follow the preprocessing of Smith et al.").
@@ -227,8 +224,7 @@ def _format_sub_spec(sub_spec: SubSpec) -> str:
             "Use the **Read** tool with ``pages=\"N-M\"`` for targeted page "
             "ranges (preserves tables/figures/equations). Only read what you "
             "need — your spec already names the relevant sections under "
-            "*Detailed Spec* below. Optionally use search_paper for semantic "
-            "search if the index was built."
+            "*Detailed Spec* below."
         )
 
     # Spec markdown (the rich content from spec.md)
