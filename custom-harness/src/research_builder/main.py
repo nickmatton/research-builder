@@ -699,70 +699,41 @@ def cli(
             sys.exit(1)
         sys.exit(0 if success else 1)
 
-    # TUI mode: spawn the pipeline as a sibling subprocess in its own session
-    # with stdin redirected to /dev/null. We do NOT run the pipeline as an
-    # in-process asyncio task because claude-agent-sdk's query() spawns the
-    # `claude` CLI as a child process, which would inherit Textual's
-    # alt-screen + raw-mode tty and hang on the first read. Subprocess
-    # isolation gives the agent a clean stdio environment and lets the TUI
-    # own the terminal exclusively. The two communicate via the same
-    # events.jsonl / commands.jsonl files the cross-process viewer uses.
+    # Non-auto path: same as --auto (run pipeline inline), but ALSO tell the
+    # user how to launch the live viewer in a second terminal.
+    #
+    # We dropped the old Textual TUI subprocess gymnastics — the new
+    # rich-based LiveViewer is a separate process the user runs alongside
+    # the pipeline (see custom-harness/src/research_builder/viewer/).
     workspace_root = project_root.resolve()
-    pipeline_log = log_dir / "pipeline.out"
+    event_log_for_viewer = event_log_path
+    ui.info("Tip: open a second terminal for the live viewer:")
+    ui.info(f"  rb-viewer {workspace_root}")
+    ui.info("  (or:  python -m research_builder.viewer " f"{workspace_root})")
+    ui.info("")
 
-    cmd: list[str] = [
-        sys.executable, "-m", "research_builder.main",
-        str(paper.resolve()),
-        # Pass --project-root so the subprocess uses the already-resolved
-        # path and doesn't re-derive the paper_stem subfolder.
-        "--project-root", str(workspace_root),
-        "-m", model,
-        "--max-retries", str(max_retries),
-        "--max-debug-attempts", str(max_debug_attempts),
-        "--auto",
-        "--event-log", str(event_log_path),
-        "--command-log", str(command_log_path),
-        "--gpu-budget", str(gpu_budget_usd),
-    ]
-    if verbose:
-        cmd.append("-v")
-    if dev:
-        cmd.append("--dev")
-    # Note: --test is NOT propagated. By the time we get here, --test has
-    # already expanded into its component flags (paper, output, auto, dev,
-    # wipe_flag), and the subprocess gets those directly.
-    if no_event_log:
-        cmd.append("--no-event-log")
-    if no_command_log:
-        cmd.append("--no-command-log")
-    # Pass the resume decision through so the subprocess doesn't re-prompt
-    # (and doesn't re-detect the existing run as a fresh one to archive).
-    cmd.append("--resume" if resume_decision else "--fresh")
+    def _auto_cleanup(signum, frame):
+        for pid in _get_descendant_pids(os.getpid()):
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        try:
+            os.killpg(os.getpgrp(), signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        sys.exit(1)
 
-    pipeline_log.parent.mkdir(parents=True, exist_ok=True)
-    ui.info(f"Launching pipeline subprocess: {' '.join(cmd)}")
-    pipeline_proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=open(pipeline_log, "w"),
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
-    ui.info(f"Pipeline PID: {pipeline_proc.pid}")
-
-    from .viewer.app import AgentTerminalApp
-
-    app = AgentTerminalApp(
-        workspace=workspace_root,
-        event_log=event_log_path,
-        command_log=command_log_path,
-        pipeline_proc=pipeline_proc,
-    )
+    signal.signal(signal.SIGTERM, _auto_cleanup)
     try:
-        app.run()
-    finally:
-        _shutdown_pipeline(pipeline_proc)
-    sys.exit(pipeline_proc.returncode or 0)
+        success = asyncio.run(run_pipeline(config, resume=resume_decision))
+    except Exception:
+        import traceback
+        ui.failure("Pipeline crashed with an unhandled exception:")
+        traceback.print_exc()
+        logging.getLogger(__name__).exception("Fatal error in run_pipeline")
+        sys.exit(1)
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":

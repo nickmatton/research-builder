@@ -1,4 +1,4 @@
-"""CLI entry point for agent-terminal."""
+"""CLI entry: ``rb-viewer <workspace>`` or ``python -m research_builder.viewer <workspace>``."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from .app import AgentTerminalApp
+from .live_viewer import run_viewer
 
 
 @click.command()
@@ -20,24 +20,16 @@ from .app import AgentTerminalApp
     default=None,
     help="Path to events.jsonl. Defaults to <workspace>/logs/events.jsonl.",
 )
-@click.option(
-    "--command-log",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Path to commands.jsonl (outbound chat). Defaults to <workspace>/logs/commands.jsonl.",
-)
-def main(workspace: Path, event_log: Path | None, command_log: Path | None) -> None:
-    """Launch the TUI viewer against a research-builder WORKSPACE directory."""
+def main(workspace: Path, event_log: Path | None) -> None:
+    """Live terminal viewer for a research-builder workspace.
+
+    Tails the events.jsonl file and renders agent activity as a scrolling
+    Claude-Code-style transcript. Run alongside `bin/research-builder` —
+    open the viewer in one terminal, the harness in another, both pointed at
+    the same workspace.
+    """
     workspace = workspace.resolve()
-    if event_log is None:
-        event_log = workspace / "logs" / "events.jsonl"
-    if command_log is None:
-        command_log = workspace / "logs" / "commands.jsonl"
-    AgentTerminalApp(
-        workspace=workspace,
-        event_log=event_log,
-        command_log=command_log,
-    ).run()
+    run_viewer(workspace, event_log)
 
 
 if __name__ == "__main__":

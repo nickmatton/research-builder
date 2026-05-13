@@ -18,8 +18,11 @@ dependencies = [
     "python-dotenv>=1.0",
     # Lambda Cloud + Semantic Scholar HTTP clients
     "httpx>=0.27",
-    # Terminal formatting (still used by orchestrator console output)
+    # Terminal formatting + live viewer (rich.live.Live + rich.panel)
     "rich>=13.7",
+    # Interactive chat console (paper questions during pipeline pauses).
+    # If you drop the chat console entirely, this becomes optional.
+    "prompt-toolkit>=3.0",
     # Test runner
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
@@ -29,19 +32,21 @@ dependencies = [
     "opentelemetry-sdk>=1.20",
 ]
 
-[project.optional-dependencies]
-# Real-time terminal UI for live phase status / activity feed / chat pane.
-# Skipped in v1 of the resurrection (textual API drift adds 2-4 hours of work
-# we don't need to land headless mode).
-tui = ["textual>=0.79", "prompt-toolkit>=3.0"]
-
-# (Removed): The [rag] extra used to install torch + sentence-transformers for
-# the search_paper MCP tool. Sub-agents now use the built-in Read tool with
-# the ``pages`` parameter for selective PDF access (preserves tables, figures,
-# equations) — semantic search no longer needed.
+# (Removed): The [tui] extra used to install textual + prompt-toolkit for the
+# original Textual-based viewer. The viewer was simplified to a rich-based
+# scrolling transcript (rich is in base deps); the Textual app and its
+# Bloomberg-style multi-pane widgets were deleted. prompt-toolkit was still
+# used by the legacy chat console (console.py) — kept in base deps:
+#   - rich (terminal formatting, used by viewer + UI module)
+#   - prompt-toolkit (legacy interactive chat console — to be removed)
+#
+# (Removed earlier): [rag] extra used to install torch + sentence-transformers
+# for the search_paper MCP tool. Sub-agents now use the built-in Read tool with
+# the ``pages`` parameter for selective PDF access.
 
 [project.scripts]
 research-builder = "research_builder.main:cli"
+rb-viewer = "research_builder.viewer.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/research_builder"]
