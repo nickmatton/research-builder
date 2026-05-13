@@ -34,7 +34,7 @@ ENV_VAR = "RESEARCH_BUILDER_EVENT_LOG"
 
 
 class EventEmitter:
-    """Append structured events as JSONL to a file."""
+    """Append structured events as JSONL to a file AND fan out to in-process subscribers."""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -42,6 +42,24 @@ class EventEmitter:
         self._lock = threading.Lock()
         # Touch the file so tailers can open it immediately.
         self.path.touch(exist_ok=True)
+        # In-process subscribers — each receives the full event dict.
+        # Used by the inline TUI viewer to render styled output in the same
+        # terminal as the running harness.
+        self._subscribers: list[Any] = []
+
+    def subscribe(self, callback) -> None:
+        """Register a callback(event_dict) called on every emit().
+
+        Exceptions in subscribers are caught and logged; they never block
+        emission or affect other subscribers.
+        """
+        self._subscribers.append(callback)
+
+    def unsubscribe(self, callback) -> None:
+        try:
+            self._subscribers.remove(callback)
+        except ValueError:
+            pass
 
     def emit(
         self,
@@ -69,6 +87,13 @@ class EventEmitter:
                     f.flush()
             except Exception as e:
                 logger.warning("event_emitter: failed to write %s: %s", type, e)
+        # Fan out to in-process subscribers (after the file write so the
+        # forensic trail captures the event even if a subscriber crashes).
+        for cb in list(self._subscribers):
+            try:
+                cb(record)
+            except Exception:
+                logger.warning("event_emitter: subscriber %r raised", cb, exc_info=True)
 
 
 _singleton: EventEmitter | None = None

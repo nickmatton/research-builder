@@ -593,16 +593,21 @@ def cli(
                 archive = resume_mod.archive_and_clear(project_root.resolve())
                 ui.info(f"Archived previous run to {archive}")
 
-    # Set up logging — console + file
-    console_level = logging.DEBUG if verbose else logging.WARNING
+    # Set up logging — console + file.
+    #
+    # Console level intentionally caps at INFO even with --verbose / --dev:
+    # DEBUG was flooding stdout with hundreds of "received StreamEvent" lines
+    # per LLM call, making it impossible to see anything useful. The file log
+    # below stays at DEBUG so the forensic trail is intact.
+    console_level = logging.INFO if verbose else logging.WARNING
     log_dir = project_root.resolve() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "run.log"
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)  # capture everything
+    root_logger.setLevel(logging.DEBUG)  # capture everything to the file handler
 
-    # Console handler (respects --verbose)
+    # Console handler — INFO max (avoid the DEBUG flood)
     console = logging.StreamHandler()
     console.setLevel(console_level)
     console.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S"))
@@ -667,57 +672,19 @@ def cli(
         gpu_budget_usd=gpu_budget_usd,
     )
 
-    if auto:
-        # When running as a subprocess (spawned by TUI with start_new_session),
-        # we are the process group leader. Install a handler so SIGTERM kills
-        # all children (claude CLI subprocesses, their bash children, etc.)
-        # instead of leaving them orphaned.
-        def _auto_cleanup(signum, frame):
-            # Kill all descendants first — catches children in different
-            # process groups (e.g. evaluate.py spawned by claude CLI Bash).
-            for pid in _get_descendant_pids(os.getpid()):
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-            # Also killpg as belt-and-suspenders for same-group children.
-            try:
-                os.killpg(os.getpgrp(), signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            sys.exit(1)
-
-        signal.signal(signal.SIGTERM, _auto_cleanup)
-
-        try:
-            success = asyncio.run(run_pipeline(config, resume=resume_decision))
-        except Exception:
-            import traceback
-            ui.failure("Pipeline crashed with an unhandled exception:")
-            traceback.print_exc()
-            logging.getLogger(__name__).exception("Fatal error in run_pipeline")
-            sys.exit(1)
-        sys.exit(0 if success else 1)
-
-    # Non-auto path: same as --auto (run pipeline inline), but ALSO tell the
-    # user how to launch the live viewer in a second terminal.
-    #
-    # We dropped the old Textual TUI subprocess gymnastics — the new
-    # rich-based LiveViewer is a separate process the user runs alongside
-    # the pipeline (see custom-harness/src/research_builder/viewer/).
-    workspace_root = project_root.resolve()
-    event_log_for_viewer = event_log_path
-    ui.info("Tip: open a second terminal for the live viewer:")
-    ui.info(f"  rb-viewer {workspace_root}")
-    ui.info("  (or:  python -m research_builder.viewer " f"{workspace_root})")
-    ui.info("")
+    # Pipeline always runs inline now (--auto or not). The inline viewer
+    # (rich-based subscriber on the event emitter) renders styled activity
+    # in the same terminal — no subprocess, no second window.
 
     def _auto_cleanup(signum, frame):
+        # Kill all descendants first — catches children in different process
+        # groups (e.g. evaluate.py spawned by claude CLI Bash).
         for pid in _get_descendant_pids(os.getpid()):
             try:
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
+        # Also killpg as belt-and-suspenders for same-group children.
         try:
             os.killpg(os.getpgrp(), signal.SIGTERM)
         except ProcessLookupError:
@@ -725,8 +692,15 @@ def cli(
         sys.exit(1)
 
     signal.signal(signal.SIGTERM, _auto_cleanup)
+
     try:
-        success = asyncio.run(run_pipeline(config, resume=resume_decision))
+        from .viewer.inline import inline_viewer_for
+
+        async def _run_with_viewer():
+            with inline_viewer_for(workspace_label=project_root.name):
+                return await run_pipeline(config, resume=resume_decision)
+
+        success = asyncio.run(_run_with_viewer())
     except Exception:
         import traceback
         ui.failure("Pipeline crashed with an unhandled exception:")
