@@ -350,6 +350,16 @@ async def run_pipeline(config: Config, resume: bool = False) -> bool:
     ),
 )
 @click.option(
+    "--test",
+    is_flag=True,
+    help=(
+        "SMOKE TEST: zero-setup smoke run. Uses the bundled 3-page "
+        "test_paper.pdf, outputs to /tmp/rb-test, auto-wipes prior "
+        "state, and implies --auto + --dev. A single command instead "
+        "of four. Useful for iterating on harness changes."
+    ),
+)
+@click.option(
     "--event-log",
     type=click.Path(path_type=Path),
     default=None,
@@ -427,6 +437,7 @@ def cli(
     auto: bool,
     verbose: bool,
     dev: bool,
+    test: bool,
     event_log: Path | None,
     no_event_log: bool,
     command_log: Path | None,
@@ -450,6 +461,35 @@ def cli(
     # GPU provisioner — sees them without requiring the user to `source .env`.
     from dotenv import load_dotenv
     load_dotenv()
+
+    # --- TEST MODE: zero-setup smoke run ---
+    if test:
+        # Bundled test paper at custom-harness/paper/test_paper.pdf
+        # main.py is at custom-harness/src/research_builder/main.py, so
+        # parents[2] resolves to custom-harness/.
+        bundled = Path(__file__).resolve().parents[2] / "paper" / "test_paper.pdf"
+        if not bundled.exists():
+            click.echo(
+                f"\033[1;31merror:\033[0m bundled test paper not found at {bundled}. "
+                "Did you delete custom-harness/paper/test_paper.pdf?",
+                err=True,
+            )
+            sys.exit(2)
+        # Apply --test overrides for any flag the user didn't explicitly set.
+        if paper is None:
+            paper = bundled
+        if output is None:
+            output = Path("/tmp/rb-test")
+        auto = True
+        dev = True
+        wipe_flag = True   # nuke prior state, no resume prompt
+        # Visible banner so it's unmistakable.
+        print("\033[1;36m" + "=" * 60 + "\033[0m")
+        print("\033[1;36m  SMOKE TEST MODE\033[0m")
+        print(f"    • Paper:  {paper}")
+        print(f"    • Output: {output}")
+        print(f"    • Implies --auto, --dev, --wipe")
+        print("\033[1;36m" + "=" * 60 + "\033[0m\n")
 
     # --- DEV MODE: route through Claude Code subscription, not direct API ---
     if dev:
@@ -688,6 +728,9 @@ def cli(
         cmd.append("-v")
     if dev:
         cmd.append("--dev")
+    # Note: --test is NOT propagated. By the time we get here, --test has
+    # already expanded into its component flags (paper, output, auto, dev,
+    # wipe_flag), and the subprocess gets those directly.
     if no_event_log:
         cmd.append("--no-event-log")
     if no_command_log:
