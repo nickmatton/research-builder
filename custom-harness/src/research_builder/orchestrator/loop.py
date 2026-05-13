@@ -297,6 +297,46 @@ class ExecutionLoop:
         paper_path = str(Path(self.config.paper_path).resolve())
         sub_spec = self.spec_manager.extract_sub_spec(phase_id, paper_path=paper_path)
 
+        # ────────────────────────────────────────────────────────────
+        # Per-section agent chain: PLAN REFINER → RESEARCHER → BUILDER
+        # The refiner + researcher run ONCE per section (cached on disk),
+        # so retries reuse their output. They run only on the first attempt.
+        # ────────────────────────────────────────────────────────────
+        context_dir = work_dir / "context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        refined_path = context_dir / "refined_spec.md"
+        research_path = context_dir / "research_notes.md"
+
+        if retry_num == 0 and not refined_path.exists():
+            ui.info(f"  📝 Plan refiner running for section '{phase_id}'...")
+            refinement = await self.orchestrator_agent.refine_section(
+                phase_id, self.spec_manager, Path(paper_path),
+            )
+            refined_md = refinement.get("refined_spec_md") or sub_spec.spec_markdown
+            refined_path.write_text(refined_md)
+            research_questions = refinement.get("research_questions") or []
+            if research_questions:
+                (context_dir / "research_questions.json").write_text(
+                    json.dumps(research_questions, indent=2)
+                )
+                ui.info(f"  🔬 Researcher running ({len(research_questions)} question(s))...")
+                research = await self.orchestrator_agent.research_for_section(
+                    phase_id, research_questions, self.spec_manager, Path(paper_path),
+                )
+                notes_md = research.get("research_notes_md", "")
+                if notes_md.strip():
+                    research_path.write_text(notes_md)
+
+        # If refined / research artifacts exist on disk (from this attempt or
+        # a previous retry), use them to enrich the builder's sub_spec.
+        if refined_path.exists():
+            sub_spec.spec_markdown = refined_path.read_text()
+        if research_path.exists():
+            sub_spec.spec_markdown += (
+                "\n\n## Research Notes (from Researcher agent)\n\n"
+                + research_path.read_text()
+            )
+
         retry_context = None
         prior_results = self.failure_handler.get_prior_results(phase_id)
         if prior_results:
@@ -828,17 +868,28 @@ class ExecutionLoop:
     async def _handle_result(self, phase_id: str, result: SubAgentResult) -> None:
         """Process a sub-agent result: accept, retry, or fail."""
         if result.status == ResultStatus.success:
-            # Run acceptance review
+            # Section Verifier (replaces the old acceptance_review). Returns a
+            # richer payload (status, evidence, claims_verified) we persist to
+            # the section's context dir for diagnostics.
             try:
                 review_work_dir = getattr(self, "_current_work_dir", None)
-                accepted, feedback = await self.orchestrator_agent.acceptance_review(
+                ui.info(f"  ✅ Section verifier running for '{phase_id}'...")
+                accepted, feedback, verifier_payload = await self.orchestrator_agent.verify_section(
                     phase_id, result, self.spec_manager, work_dir=review_work_dir,
                 )
+                # Persist verifier output for the journal + post-hoc diagnostics
+                if review_work_dir is not None:
+                    try:
+                        verify_path = review_work_dir / "context" / f"verification_retry_{self.failure_handler.retries_used(phase_id)}.json"
+                        verify_path.parent.mkdir(parents=True, exist_ok=True)
+                        verify_path.write_text(json.dumps(verifier_payload, indent=2))
+                    except Exception:
+                        logger.exception("Failed to persist verifier payload for %s", phase_id)
             except asyncio.TimeoutError:
-                logger.warning("Acceptance review timed out for phase=%s. Auto-accepting.", phase_id)
+                logger.warning("Section verifier timed out for phase=%s. Auto-accepting.", phase_id)
                 accepted, feedback = True, None
             except Exception as e:
-                logger.warning("Acceptance review failed for phase=%s: %s. Auto-accepting.", phase_id, e)
+                logger.warning("Section verifier failed for phase=%s: %s. Auto-accepting.", phase_id, e)
                 accepted, feedback = True, None
             if accepted:
                 self.spec_manager.set_phase_status(

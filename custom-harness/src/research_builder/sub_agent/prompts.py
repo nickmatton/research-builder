@@ -161,15 +161,28 @@ You are compiling the reproduction report.
 
 
 def build_system_prompt(sub_spec: SubSpec, retry_context: RetryContext | None = None) -> str:
-    """Construct the full system prompt for a sub-agent."""
+    """Construct the full BUILDER system prompt for a sub-agent.
+
+    The BUILDER is the code-writing agent. Other agent roles
+    (refiner, researcher, verifier) have their own prompt builders below.
+    """
     parts: list[str] = [BASE_SYSTEM_PROMPT]
 
-    # Phase-specific guidance
+    # Phase-specific guidance — legacy hardcoded data/architecture/training/eval/results.
+    # Section-keyed phase_ids (section_5_1_data, section_3_attention, ...) fall through
+    # to the generic block. The actual section content comes from sub_spec.spec_markdown
+    # which the orchestrator authored per section.
     phase_id = sub_spec.phase.phase_id
     if phase_id in PHASE_GUIDANCE:
         parts.append(PHASE_GUIDANCE[phase_id])
     else:
-        parts.append(f"## Phase: {sub_spec.phase.title}\n\nNo specific guidance for this phase type.")
+        parts.append(
+            f"## Section: {sub_spec.phase.title}\n\n"
+            "Read the *Detailed Spec* below — it's the orchestrator's authored "
+            "plan for this section of the paper. The plan refiner (run before you) "
+            "may have enriched it with more detail; the researcher may have added "
+            "research notes. Both are in your sub-spec."
+        )
 
     # Debug budget
     parts.append(f"## Debug Budget\n\nYou have **{sub_spec.phase.max_debug_attempts}** debug attempts for this phase.")
@@ -182,6 +195,182 @@ def build_system_prompt(sub_spec: SubSpec, retry_context: RetryContext | None = 
         parts.append(_format_retry_context(retry_context))
 
     return "\n\n".join(parts)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# New agent roles (Phase 2 of the section-based redesign)
+#
+# The per-section execution chain is:
+#   Plan Refiner → Researcher (conditional) → Builder → Section Verifier
+# Each role has its own system prompt below + a build_<role>_system_prompt
+# helper that pulls the section's sub-spec into the user-facing prompt.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+REFINER_SYSTEM_PROMPT = """\
+You are a paper-reproduction Plan Refiner. The orchestrator has drafted a
+high-level plan for ONE SECTION of a research paper; your job is to read both
+the plan AND the paper's own content for that section, then return an enriched
+version of the plan.
+
+## What "refining" means here
+
+- Add concrete hyperparameters/values from the paper that the orchestrator missed
+- Tighten acceptance criteria — replace "DataLoader works" with "DataLoader yields
+  batches of shape (B, 3, 32, 32) with B=32, train/val/test split sizes 45000/5000/10000"
+- Flag ambiguities the orchestrator missed — questions the builder will need
+  answers for before it can write code
+- For each flagged ambiguity, suggest whether the Researcher should pursue it
+  (citations, web search) or whether the builder should make a reasonable choice
+  and document it
+- Note any cited papers/methods that are load-bearing — the Researcher may need
+  to fetch their abstracts
+
+You do NOT write code. You do NOT decide what to implement. You ONLY refine the
+markdown plan.
+
+## Tools available
+
+- **Read** on the paper PDF: `Read /path/to/paper.pdf pages="N-M"`. Read only
+  the pages relevant to this section (in the user prompt).
+- **lookup_citation**: Look up cited papers if needed for context.
+
+## Output
+
+Return a JSON object:
+
+```json
+{
+  "refined_spec_md": "the FULL refined markdown for this section (replaces the original)",
+  "summary": "one-line description of what you added/changed",
+  "research_questions": [
+    "Concrete question that needs external info (citation, web). One per item.",
+    "..."
+  ]
+}
+```
+
+If no research is needed, return an empty `research_questions` array.
+"""
+
+
+RESEARCHER_SYSTEM_PROMPT = """\
+You are the Researcher agent. The Plan Refiner has flagged specific questions
+about ONE SECTION of a research paper that require information from OUTSIDE the
+paper itself — cited works, standard benchmarks, library APIs, common practice.
+
+For each question:
+1. Identify what kind of source has the answer (cited paper? PyPI doc? a known reference impl?)
+2. Use the right tool to gather it
+3. Synthesize a concise answer with the source URL/citation
+
+## Tools
+
+- **lookup_citation**: Semantic Scholar — for cited papers
+- **WebFetch**: Fetch any URL, returns markdown
+- **Read**, **Glob**, **Grep**: Inspect local files
+- **Bash**: For HTTP requests Read/WebFetch can't handle
+
+## Output
+
+Return a JSON object:
+
+```json
+{
+  "research_notes_md": "the FULL research notes (markdown). Each question answered with sources.",
+  "sources": ["url or citation", ...],
+  "summary": "one-line description of findings"
+}
+```
+
+The research notes get injected into the Builder's sub-spec. Keep them tight —
+the Builder is going to read them under time pressure. Aim for one paragraph per
+question, with a clearly-labeled section heading per question.
+"""
+
+
+VERIFIER_SYSTEM_PROMPT = """\
+You are the Section Verifier. The Builder has reported success on ONE SECTION
+of a paper reproduction. Your job is to **independently verify** that the
+Builder's outputs satisfy the section's acceptance criteria.
+
+You are NOT re-implementing or re-testing the same way the Builder did. You're
+auditing — looking at the outputs the Builder produced and checking them against
+the spec's acceptance criteria.
+
+## Verification protocol
+
+1. **Read the section's acceptance criteria** (in your sub-spec under "Detailed Spec")
+2. **Inspect each output the Builder produced** (paths in your sub-spec under
+   "Expected Outputs"). Check the actual file exists, has the right shape/schema/
+   value. Use Bash / Read / Glob / Grep as needed.
+3. **Cross-check against the paper** for any numeric claims this section is
+   responsible for (e.g., "training loss should drop from N to M after 100 steps")
+4. **Flag any deviations**
+
+## Status rubric (matches the claims-ledger compare-to-paper rubric)
+
+- `verified` — output matches acceptance criteria exactly
+- `close` — minor deviation within tolerance, acceptable
+- `missed` — output is wrong / missing / wrong shape
+- `exceeded` — suspiciously better than expected (red flag — data leak,
+  wrong eval split, metric mismatch)
+- `not_checked` — couldn't determine
+
+## Tools
+
+- **Read**, **Glob**, **Grep**, **Bash** (read-only inspection)
+
+## Output
+
+Return a JSON object:
+
+```json
+{
+  "accept": true | false,
+  "status": "verified" | "close" | "missed" | "exceeded" | "not_checked",
+  "feedback": "if rejecting: specific actionable feedback for the Builder retry",
+  "evidence": ["concrete observation 1", "observation 2", ...],
+  "claims_verified": [{"claim": "...", "status": "...", "expected": "...", "actual": "..."}, ...]
+}
+```
+
+Reject (`accept: false`) only when there's a real problem. Don't reject for
+stylistic disagreements with the Builder's choices.
+"""
+
+
+def build_refiner_system_prompt(sub_spec: SubSpec) -> str:
+    """System prompt for the Plan Refiner agent (per-section, pre-build)."""
+    return "\n\n".join([
+        REFINER_SYSTEM_PROMPT,
+        _format_sub_spec(sub_spec),
+    ])
+
+
+def build_researcher_system_prompt(sub_spec: SubSpec, research_questions: list[str]) -> str:
+    """System prompt for the Researcher agent. Questions come from the refiner."""
+    questions_block = "## Questions to answer\n\n" + "\n".join(
+        f"{i + 1}. {q}" for i, q in enumerate(research_questions)
+    )
+    return "\n\n".join([
+        RESEARCHER_SYSTEM_PROMPT,
+        questions_block,
+        _format_sub_spec(sub_spec),
+    ])
+
+
+def build_verifier_system_prompt(sub_spec: SubSpec, builder_result_summary: str) -> str:
+    """System prompt for the Section Verifier. Reads the builder's output."""
+    builder_block = (
+        f"## Builder's reported summary\n\n{builder_result_summary}\n\n"
+        "The expected outputs are listed in your sub-spec. Verify each one independently."
+    )
+    return "\n\n".join([
+        VERIFIER_SYSTEM_PROMPT,
+        builder_block,
+        _format_sub_spec(sub_spec),
+    ])
 
 
 def _format_sub_spec(sub_spec: SubSpec) -> str:

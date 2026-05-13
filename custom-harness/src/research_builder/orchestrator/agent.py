@@ -51,8 +51,13 @@ from .spec_manager import SpecManager
 logger = logging.getLogger(__name__)
 
 SPEC_CREATION_SYSTEM_PROMPT = """\
-You are an expert research paper analyst. Your job is to read a research paper and \
-produce two outputs that will guide a team of implementation agents.
+You are an expert research paper analyst. Your job is to read a research paper \
+and produce a **section-aligned reproduction plan** that a downstream agent team \
+will execute.
+
+The plan is organized by the paper's own sections — not by a fixed data/arch/training \
+pipeline. Each implementation-requiring section of the paper becomes one node in \
+the execution DAG, with its own per-section plan, file artifacts, and dependencies.
 
 ## Reading the paper
 
@@ -62,71 +67,84 @@ pages you can read the whole thing in one Read call. For larger papers, use the 
 ``pages`` parameter (e.g. ``pages="1-10"`` then ``pages="11-20"``); maximum 20 \
 pages per Read call. The page count for this paper is in the user prompt below.
 
-## Outputs you must produce
+## Identifying sections
 
-1. **spec.md** — A rich markdown document that serves as the canonical interpretation \
-of the paper. It should contain:
-   - A global context section with a 2-3 paragraph summary
-   - One section per implementation phase (typically: Data, Architecture, Training, Eval, Results)
-   - For each phase: a detailed description, acceptance criteria, and any relevant \
-     hyperparameters, equations, or implementation details extracted from the paper
-   - Flagged ambiguities or unclear details
+Read the paper. Identify each section that REQUIRES IMPLEMENTATION WORK to \
+reproduce. Skip pure-prose sections (Introduction, Related Work, Conclusion, \
+Acknowledgements). Typical implementation-requiring sections in an ML paper:
 
-2. **state** — A structured JSON object with:
-   - metadata: paper_id, paper_title
-   - phases: list of phase objects with phase_id, title, inputs (list of {name, file_path}), \
-     outputs (list of {name, file_path})
-   - dependency_graph: dict mapping phase_id to list of phase_ids it depends on
+  - Datasets / data preprocessing (often §5.1 or §3.1)
+  - Model architecture (often §3 with subsections per component)
+  - Training (optimizer, schedule, loss, regularization)
+  - Evaluation protocol (decoding, metrics, baselines)
+  - Headline experiments (the table the headline claim comes from)
+  - Notable ablations or analyses (if reproduction-worthy)
 
-3. **plan** — An explicit DAG + file plan that downstream tools and the UI consume:
-   - nodes: list of {phase_id, title, description, sub_steps (list of short bullet strings, \
-     3–6 items describing the concrete work in that phase), file_ids (list of file_id strings \
-     this phase OWNS as outputs/intermediates), depends_on (list of phase_ids)}
-   - files: list of {file_id (stable dotted id like "data.train_loader"), rel_path \
-     (e.g. "outputs/train_loader.pt"), owning_phase, role ("input"|"output"|"intermediate"), \
-     description (one-line purpose), depends_on (list of file_ids consumed)}
+Use STABLE, descriptive section_ids derived from the paper's section numbering: \
+``section_3_2_attention``, ``section_5_1_data``, ``section_6_1_results_en_de``. \
+Don't use the fixed legacy ids ("data", "architecture", "training", "eval", "results").
 
-## Output Format
+## Outputs
 
-Return your response as a JSON object with exactly three keys:
+Return a JSON object with three top-level keys: ``spec_md``, ``state``, ``plan``.
+
+1. **spec_md** — Rich markdown. Structure:
+   - Global context paragraph (the paper in 3 sentences)
+   - One markdown subsection per section_id, in DAG order:
+     - Paper-section reference (e.g. "§3.2 — Multi-Head Attention", page N–M)
+     - Description: what needs to be implemented
+     - Acceptance criteria: concrete, testable
+     - Hyperparameters / equations / details copied verbatim from the paper
+     - Flagged ambiguities
+
+2. **state** — Machine-readable:
+   - metadata: ``{paper_id, paper_title}``
+   - phases: list of ``{phase_id, title, inputs: [{name, file_path}], outputs: [{name, file_path}]}`` \
+     where ``phase_id`` is one of the section_ids above. (The field is still named ``phases`` for \
+     backward-compat with the downstream code, but each phase here is one paper SECTION.)
+   - dependency_graph: ``{phase_id: [upstream_phase_id, ...]}``. Express natural data flow: \
+     data sections come before model sections; model before training; training before eval; \
+     etc. — but mapped onto WHICH SECTIONS of the paper own each piece.
+
+3. **plan** — Execution DAG + file plan:
+   - nodes: ``{phase_id, title, description, sub_steps: [3-6 bullets], file_ids: [...], depends_on: [...]}``
+   - files: ``{file_id (dotted, e.g. "section_5_1_data.train_loader"), rel_path, owning_phase, role, description, depends_on}``
+
+## Output format
+
 ```json
 {
-  "spec_md": "the full markdown content...",
+  "spec_md": "...",
   "state": {
     "metadata": {"paper_id": "...", "paper_title": "..."},
-    "phases": [...],
-    "dependency_graph": {...}
+    "phases": [
+      {"phase_id": "section_5_1_data", "title": "Data — WMT 2014 EN-DE",
+       "inputs": [], "outputs": [{"name": "train_loader", "file_path": "phases/section_5_1_data/outputs/train_loader.pt"}]}
+    ],
+    "dependency_graph": {
+      "section_5_1_data": [],
+      "section_3_architecture": [],
+      "section_5_training": ["section_5_1_data", "section_3_architecture"],
+      "section_6_1_eval": ["section_5_training"]
+    }
   },
   "plan": {
-    "nodes": [
-      {"phase_id": "data", "title": "Data", "description": "...", \
-"sub_steps": ["download X", "tokenize", "build loader"], \
-"file_ids": ["data.train_loader"], "depends_on": []}
-    ],
-    "files": [
-      {"file_id": "data.train_loader", "rel_path": "outputs/train_loader.pt", \
-"owning_phase": "data", "role": "output", "description": "Serialized training DataLoader", \
-"depends_on": []}
-    ]
+    "nodes": [...],
+    "files": [...]
   }
 }
 ```
 
 ## Guidelines
 
-- Be thorough. Extract every hyperparameter, every architectural detail, every dataset reference.
-- Use the standard phase IDs: "data", "architecture", "training", "eval", "results"
-- Artifact file_paths should use the convention: phases/<phase_id>/outputs/<filename>
-- Flag anything ambiguous — the implementation agents will consult the paper for details, \
-  but the spec should identify known gaps.
-- The dependency graph should reflect which phases need outputs from other phases. \
-  Typically: data and architecture are independent, training depends on both, \
-  eval depends on training (and sometimes data), results depends on eval and training.
-- **Cited papers:** If the prompt includes a "Literature Context" section with abstracts \
-  of cited papers, use them to resolve ambiguities. When the paper says something like \
-  "we follow the same preprocessing as [Smith et al.]", look up the cited abstract for \
-  specifics and include them in the spec rather than marking them as ambiguous. \
-  Implementation agents also have a `lookup_citation` tool for runtime lookups.
+- Extract every hyperparameter, every architectural detail, every dataset reference.
+- section_ids are stable + descriptive. The paper's own numbering is the anchor.
+- file_paths still use the convention: ``phases/<phase_id>/outputs/<filename>``. \
+  (The directory is named "phases/" but the contents are section-keyed.)
+- Flag ambiguities explicitly — the plan refiner downstream will look at them first.
+- Dependency graph reflects WHICH OUTPUTS each section needs (e.g., training needs the \
+  data section's loader AND the architecture section's model). Sections that can run \
+  independently should have empty depends_on.
 """
 
 CLAIMS_EXTRACTION_SYSTEM_PROMPT = """\
@@ -612,6 +630,190 @@ class OrchestratorAgent:
                 )
 
         return accepted, feedback
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Per-section agent chain (Stage 2 of the redesign):
+    #   refine_section → research_for_section (conditional) → builder → verify_section
+    # ──────────────────────────────────────────────────────────────────────
+
+    async def refine_section(
+        self,
+        phase_id: str,
+        spec_manager: SpecManager,
+        paper_path: Path,
+    ) -> dict:
+        """Plan Refiner: reads section spec + paper, returns enriched markdown
+        + a list of questions for the Researcher.
+
+        Returns dict: {refined_spec_md, summary, research_questions: [...]}.
+        On failure, returns the original spec + no research questions.
+        """
+        from ..sub_agent.prompts import REFINER_SYSTEM_PROMPT
+        phase = spec_manager.state.get_phase(phase_id)
+        if phase is None:
+            return {"refined_spec_md": "", "summary": "(unknown phase)", "research_questions": []}
+
+        sub_spec = spec_manager.extract_sub_spec(phase_id, paper_path=str(paper_path.resolve()))
+        try:
+            from ..llm.paper import get_page_count
+            page_count = get_page_count(paper_path)
+        except Exception:
+            page_count = 20
+
+        prompt = (
+            f"Refine the plan for section '{phase_id}' (paper: {paper_path}, "
+            f"{page_count} pages).\n\n"
+            f"## Section's current plan (markdown)\n\n{sub_spec.spec_markdown}\n\n"
+            "Return the JSON object specified in your system prompt."
+        )
+
+        try:
+            response_text = await self._query(
+                system=REFINER_SYSTEM_PROMPT,
+                prompt=prompt,
+                tools=["Read", "Bash", "Glob", "Grep"],
+                max_turns=12,
+                prompt_role=f"refine-{phase_id}",
+                timeout=300,
+            )
+        except Exception as e:
+            logger.warning("refine_section crashed for %s: %s", phase_id, e)
+            return {
+                "refined_spec_md": sub_spec.spec_markdown,
+                "summary": f"(refiner crashed: {e})",
+                "research_questions": [],
+            }
+
+        parsed = _extract_json(response_text)
+        if not parsed:
+            logger.warning("refine_section response could not be parsed for %s", phase_id)
+            return {
+                "refined_spec_md": sub_spec.spec_markdown,
+                "summary": "(refiner response unparsed)",
+                "research_questions": [],
+            }
+        return {
+            "refined_spec_md": parsed.get("refined_spec_md") or sub_spec.spec_markdown,
+            "summary": parsed.get("summary", ""),
+            "research_questions": list(parsed.get("research_questions", [])),
+        }
+
+    async def research_for_section(
+        self,
+        phase_id: str,
+        questions: list[str],
+        spec_manager: SpecManager,
+        paper_path: Path,
+    ) -> dict:
+        """Researcher: answers refiner's questions using citations + web.
+
+        Returns dict: {research_notes_md, sources, summary}.
+        On failure, returns empty notes.
+        """
+        from ..sub_agent.prompts import build_researcher_system_prompt
+        if not questions:
+            return {"research_notes_md": "", "sources": [], "summary": "(no questions)"}
+
+        sub_spec = spec_manager.extract_sub_spec(phase_id, paper_path=str(paper_path.resolve()))
+        system = build_researcher_system_prompt(sub_spec, questions)
+
+        prompt = (
+            f"Answer the questions in your system prompt for section '{phase_id}'. "
+            f"Return the JSON object specified."
+        )
+
+        try:
+            response_text = await self._query(
+                system=system,
+                prompt=prompt,
+                # WebFetch + WebSearch are built-in Agent SDK tools. lookup_citation
+                # is the harness's MCP tool but is wired via the sub-agent's MCP
+                # server — researcher doesn't share that server, so it uses
+                # WebFetch on Semantic Scholar URLs directly.
+                tools=["Read", "Bash", "Glob", "Grep", "WebFetch", "WebSearch"],
+                max_turns=15,
+                prompt_role=f"research-{phase_id}",
+                timeout=600,
+            )
+        except Exception as e:
+            logger.warning("research_for_section crashed for %s: %s", phase_id, e)
+            return {"research_notes_md": "", "sources": [], "summary": f"(researcher crashed: {e})"}
+
+        parsed = _extract_json(response_text)
+        if not parsed:
+            return {"research_notes_md": "", "sources": [], "summary": "(researcher unparsed)"}
+        return {
+            "research_notes_md": parsed.get("research_notes_md", ""),
+            "sources": list(parsed.get("sources", [])),
+            "summary": parsed.get("summary", ""),
+        }
+
+    async def verify_section(
+        self,
+        phase_id: str,
+        builder_result: SubAgentResult,
+        spec_manager: SpecManager,
+        work_dir: Path | None = None,
+    ) -> tuple[bool, str | None, dict]:
+        """Section Verifier: replaces the old acceptance_review.
+
+        Returns (accept, feedback, verifier_payload). verifier_payload is the
+        raw JSON the verifier emitted — includes status, evidence,
+        claims_verified — useful for the journal/diagnostics.
+        """
+        from ..sub_agent.prompts import build_verifier_system_prompt
+        phase = spec_manager.state.get_phase(phase_id)
+        if phase is None:
+            return False, f"Unknown phase: {phase_id}", {}
+
+        sub_spec = spec_manager.extract_sub_spec(phase_id, paper_path=str(Path(self.config.paper_path).resolve()))
+        system = build_verifier_system_prompt(sub_spec, builder_result.summary)
+
+        # Same review context payload as the legacy acceptance_review.
+        review_context = {
+            "phase_id": phase_id,
+            "phase_title": phase.title,
+            "work_dir": str(work_dir) if work_dir else None,
+            "expected_outputs": [a.model_dump() for a in phase.outputs],
+            "actual_outputs": [a.model_dump() for a in builder_result.outputs],
+            "test_report": {
+                "tests_run": builder_result.test_report.tests_run,
+                "tests_passed": builder_result.test_report.tests_passed,
+                "tests_failed": builder_result.test_report.tests_failed,
+            },
+        }
+
+        prompt = (
+            f"Verify the Builder's outputs for section '{phase_id}'. "
+            f"Work directory: {work_dir}. Inspect the actual files and "
+            f"compare against the acceptance criteria in your sub-spec.\n\n"
+            f"## Context\n\n```json\n{json.dumps(review_context, indent=2)}\n```\n\n"
+            "Return the JSON object specified in your system prompt."
+        )
+
+        try:
+            response_text = await self._query(
+                system=system,
+                prompt=prompt,
+                tools=["Read", "Bash", "Glob", "Grep"],
+                max_turns=12,
+                prompt_role=f"verify-{phase_id}",
+                timeout=300,
+            )
+        except Exception as e:
+            logger.warning("verify_section crashed for %s: %s — auto-accepting", phase_id, e)
+            return True, None, {"status": "not_checked", "feedback": str(e)}
+
+        parsed = _extract_json(response_text)
+        if not parsed:
+            logger.warning("verify_section response unparsed for %s — auto-accepting", phase_id)
+            return True, None, {"status": "not_checked"}
+
+        accepted = bool(parsed.get("accept", False))
+        feedback = parsed.get("feedback") if not accepted else None
+        return accepted, feedback, parsed
+
+    # ──────────────────────────────────────────────────────────────────────
 
     async def _extract_claims(
         self,
