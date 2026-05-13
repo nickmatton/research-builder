@@ -212,6 +212,27 @@ class SubAgent:
             )
 
         messages_received: list[str] = []  # trace of message types for crash diagnostics
+
+        # Heartbeat: sub-agent sessions can be 50+ min long. Print a one-line
+        # "still alive" update every 30s with elapsed + msg-count + last
+        # message type. Bypasses the logger so it shows regardless of
+        # --verbose. Cancelled in the finally block below.
+        import asyncio as _asyncio
+        _hb_start = _asyncio.get_event_loop().time()
+
+        async def _heartbeat():
+            interval = 30.0
+            while True:
+                await _asyncio.sleep(interval)
+                elapsed = _asyncio.get_event_loop().time() - _hb_start
+                last = messages_received[-1] if messages_received else "(no messages yet)"
+                print(
+                    f"  💓 [phase:{phase_id}] {elapsed:.0f}s elapsed · "
+                    f"{len(messages_received)} non-stream msgs · last: {last}",
+                    flush=True,
+                )
+
+        heartbeat_task = _asyncio.create_task(_heartbeat())
         try:
             turn_count = 0
             async for message in query(prompt=user_message, options=options):
@@ -413,6 +434,21 @@ class SubAgent:
                     "stderr_tail": stderr_lines[-10:] if stderr_lines else [],
                 },
             )
+        finally:
+            # Cancel the heartbeat task (covers both success-return and
+            # exception paths). Print a final summary if the run was nontrivial.
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except (_asyncio.CancelledError, Exception):
+                pass
+            _hb_elapsed = _asyncio.get_event_loop().time() - _hb_start
+            if _hb_elapsed >= 5.0:
+                print(
+                    f"  ✓ [phase:{phase_id}] done in {_hb_elapsed:.1f}s "
+                    f"({len(messages_received)} msgs)",
+                    flush=True,
+                )
 
 
     def _write_context_snapshot(self, system_prompt: str, user_message: str) -> None:

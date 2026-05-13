@@ -1078,43 +1078,80 @@ class OrchestratorAgent:
                                 type(message).__name__,
                             )
 
+                # Heartbeat: a long LLM call (acceptance review, post-mortem,
+                # spec creation) can be silent for minutes — print a one-line
+                # "still alive" update every 20s so the user knows it's working.
+                _hb_start = asyncio.get_event_loop().time()
+
+                async def _heartbeat():
+                    interval = 20.0
+                    while True:
+                        await asyncio.sleep(interval)
+                        elapsed = asyncio.get_event_loop().time() - _hb_start
+                        last_msg = messages_received[-1] if messages_received else "(no messages yet)"
+                        # Use print() so it bypasses logger filters and shows
+                        # regardless of --verbose. Single line, easy to grep.
+                        print(
+                            f"  💓 [{prompt_role}] {elapsed:.0f}s elapsed · "
+                            f"{len(messages_received)} msgs (last: {last_msg}) · "
+                            f"{len(result_text)} chars",
+                            flush=True,
+                        )
+
+                heartbeat_task = asyncio.create_task(_heartbeat())
                 try:
-                    if timeout is not None:
-                        await asyncio.wait_for(_consume_stream(), timeout=timeout)
-                    else:
-                        await _consume_stream()
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "orchestrator _query timed out after %.0fs (had %d chars of text so far)",
-                        timeout, len(result_text),
-                    )
-                    if not result_text:
-                        raise
-                except Exception as stream_err:
-                    # The CLI process may exit non-zero after it already
-                    # delivered a ResultMessage (e.g. post-run cleanup
-                    # failure). If we got usable text, log the error but
-                    # return the result instead of discarding it and
-                    # retrying — the model's work is done.
-                    logger.warning(
-                        "CLI stream error after %d messages [%s]: %s",
-                        len(messages_received),
-                        " → ".join(messages_received) or "(none)",
-                        stream_err,
-                    )
-                    if stderr_lines:
+                    try:
+                        if timeout is not None:
+                            await asyncio.wait_for(_consume_stream(), timeout=timeout)
+                        else:
+                            await _consume_stream()
+                    except asyncio.TimeoutError:
                         logger.warning(
-                            "CLI stderr at crash (%d lines):\n%s",
-                            len(stderr_lines), "\n".join(stderr_lines[-30:]),
+                            "orchestrator _query timed out after %.0fs (had %d chars of text so far)",
+                            timeout, len(result_text),
                         )
-                    if result_text:
+                        if not result_text:
+                            raise
+                    except Exception as stream_err:
+                        # The CLI process may exit non-zero after it already
+                        # delivered a ResultMessage (e.g. post-run cleanup
+                        # failure). If we got usable text, log the error but
+                        # return the result instead of discarding it and
+                        # retrying — the model's work is done.
                         logger.warning(
-                            "CLI crashed after delivering result (%d chars); "
-                            "using collected response",
-                            len(result_text),
+                            "CLI stream error after %d messages [%s]: %s",
+                            len(messages_received),
+                            " → ".join(messages_received) or "(none)",
+                            stream_err,
                         )
-                    else:
-                        raise
+                        if stderr_lines:
+                            logger.warning(
+                                "CLI stderr at crash (%d lines):\n%s",
+                                len(stderr_lines), "\n".join(stderr_lines[-30:]),
+                            )
+                        if result_text:
+                            logger.warning(
+                                "CLI crashed after delivering result (%d chars); "
+                                "using collected response",
+                                len(result_text),
+                            )
+                        else:
+                            raise
+                finally:
+                    # Always cancel the heartbeat task — both on success and
+                    # on exception bubbling up to the outer retry loop.
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                    elapsed_total = asyncio.get_event_loop().time() - _hb_start
+                    if elapsed_total >= 5.0:  # only print summary for non-trivial calls
+                        print(
+                            f"  ✓ [{prompt_role}] done in {elapsed_total:.1f}s "
+                            f"({len(messages_received)} msgs, {len(result_text)} chars)",
+                            flush=True,
+                        )
 
                 if self.emitter and emit_messages and result_text:
                     self.emitter.emit(
