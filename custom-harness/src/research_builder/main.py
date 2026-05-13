@@ -312,8 +312,8 @@ async def run_pipeline(config: Config, resume: bool = False) -> bool:
 )
 @click.option(
     "--model", "-m",
-    default="claude-opus-4-6",
-    help="Claude model to use",
+    default=None,
+    help="Claude model to use (default: Config.model, currently claude-haiku-4-5-20251001)",
 )
 @click.option(
     "--max-retries",
@@ -335,7 +335,19 @@ async def run_pipeline(config: Config, resume: bool = False) -> bool:
 @click.option(
     "--verbose", "-v",
     is_flag=True,
-    help="Enable verbose logging",
+    help="Enable verbose (DEBUG) logging to console.",
+)
+@click.option(
+    "--dev",
+    is_flag=True,
+    help=(
+        "DEV MODE for testing without burning Anthropic API tokens. "
+        "Forces the Claude Agent SDK to use the user's Claude Code "
+        "subscription (via the bundled `claude` CLI) by unsetting "
+        "ANTHROPIC_API_KEY in this process. Also implies --verbose, "
+        "and pins the model to claude-haiku-4-5 for fast iteration "
+        "unless --model is passed explicitly."
+    ),
 )
 @click.option(
     "--event-log",
@@ -409,11 +421,12 @@ async def run_pipeline(config: Config, resume: bool = False) -> bool:
 def cli(
     paper: Path | None,
     output: Path | None,
-    model: str,
+    model: str | None,
     max_retries: int,
     max_debug_attempts: int,
     auto: bool,
     verbose: bool,
+    dev: bool,
     event_log: Path | None,
     no_event_log: bool,
     command_log: Path | None,
@@ -437,6 +450,27 @@ def cli(
     # GPU provisioner — sees them without requiring the user to `source .env`.
     from dotenv import load_dotenv
     load_dotenv()
+
+    # --- DEV MODE: route through Claude Code subscription, not direct API ---
+    if dev:
+        # Unset ANTHROPIC_API_KEY so the bundled `claude` CLI falls back to
+        # whatever auth `claude login` configured (typically a Claude.ai Pro/Max
+        # subscription). Only affects THIS process — your shell env stays intact.
+        popped = os.environ.pop("ANTHROPIC_API_KEY", None)
+        # --dev implies --verbose
+        verbose = True
+        # Pin to haiku unless user passed --model explicitly. Haiku is fast +
+        # cheap, ideal for dev iteration.
+        if model is None:
+            model = "claude-haiku-4-5-20251001"
+        # Big visible banner so it's impossible to confuse a dev run with prod.
+        print("\033[1;33m" + "=" * 60 + "\033[0m")
+        print("\033[1;33m  DEV MODE\033[0m")
+        print(f"    • ANTHROPIC_API_KEY: {'unset (was set, popped)' if popped else 'unset (was already)'}")
+        print(f"    • Backend:           Claude Code subscription (bundled `claude` CLI)")
+        print(f"    • Model:             {model}")
+        print(f"    • Logging:           DEBUG (verbose enabled)")
+        print("\033[1;33m" + "=" * 60 + "\033[0m\n")
 
     # Show banner
     ui.banner()
@@ -652,6 +686,8 @@ def cli(
     ]
     if verbose:
         cmd.append("-v")
+    if dev:
+        cmd.append("--dev")
     if no_event_log:
         cmd.append("--no-event-log")
     if no_command_log:
