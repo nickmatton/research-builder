@@ -4,12 +4,22 @@ from datetime import datetime
 
 import yaml
 
+import pytest
+
 from research_builder.models.spec import (
+    AcceptanceCriterion,
     Artifact,
+    Citation,
+    CritiqueVerdict,
+    DagNode,
     EventType,
+    FileRole,
     PhaseState,
     PhaseStatus,
+    PlannedFile,
     Revision,
+    SectionCritique,
+    SectionSpec,
     SpecMetadata,
     SpecState,
 )
@@ -67,7 +77,6 @@ class TestPhaseState:
         assert p.max_debug_attempts == 10
         assert p.inputs == []
         assert p.outputs == []
-        assert p.current_try == 0
 
     def test_with_artifacts(self):
         p = PhaseState(
@@ -78,6 +87,58 @@ class TestPhaseState:
         )
         assert len(p.inputs) == 1
         assert p.outputs[0].name == "checkpoint"
+
+
+class TestDagNodeSubStepsCoercion:
+    def test_strings_pass_through(self):
+        node = DagNode(phase_id="p", title="P", sub_steps=["a", "b"])
+        assert node.sub_steps == ["a", "b"]
+
+    def test_dict_items_flatten_to_string(self):
+        node = DagNode(
+            phase_id="p",
+            title="P",
+            sub_steps=[
+                {"Implement activation functions": "sigmoid f(x)"},
+                "raw bullet",
+            ],
+        )
+        assert node.sub_steps == [
+            "Implement activation functions: sigmoid f(x)",
+            "raw bullet",
+        ]
+
+    def test_multi_key_dict_joined(self):
+        node = DagNode(
+            phase_id="p",
+            title="P",
+            sub_steps=[{"step": "do x", "note": "carefully"}],
+        )
+        assert node.sub_steps == ["step: do x; note: carefully"]
+
+    def test_non_string_non_dict_coerced(self):
+        node = DagNode(phase_id="p", title="P", sub_steps=[1, 2.5])
+        assert node.sub_steps == ["1", "2.5"]
+
+
+class TestPlannedFileRoleCoercion:
+    def test_valid_enum_passes(self):
+        f = PlannedFile(file_id="f", rel_path="x", owning_phase="p", role="output")
+        assert f.role == FileRole.output
+
+    def test_unknown_role_coerced_to_output(self):
+        f = PlannedFile(
+            file_id="f", rel_path="x", owning_phase="p", role="core_module"
+        )
+        assert f.role == FileRole.output
+
+    def test_uppercase_role_normalized(self):
+        f = PlannedFile(file_id="f", rel_path="x", owning_phase="p", role="INPUT")
+        assert f.role == FileRole.input
+
+    def test_empty_role_defaults_to_output(self):
+        f = PlannedFile(file_id="f", rel_path="x", owning_phase="p", role="")
+        assert f.role == FileRole.output
 
 
 class TestSpecState:
@@ -128,6 +189,59 @@ class TestSpecState:
         loaded = yaml.safe_load(yaml_str)
         restored = SpecState.model_validate(loaded)
         assert restored.metadata.paper_title == "Test Paper"
+
+
+# --- spec.py: per-section spec authoring (new) ---
+
+
+class TestSectionSpec:
+    def _make(self, **overrides):
+        defaults = dict(
+            phase_id="section_3_2",
+            title="Multi-Head Attention",
+            goal="Implement multi-head scaled dot-product attention.",
+            spec_markdown="## Multi-Head Attention\n\nBody.",
+            acceptance_criteria=[
+                AcceptanceCriterion(
+                    text="Forward returns (batch, seq, d_model) shape",
+                    source=Citation(page=4, section="3.2", quote=None),
+                )
+            ],
+            citations=[Citation(page=4, section="3.2")],
+        )
+        defaults.update(overrides)
+        return SectionSpec(**defaults)
+
+    def test_validate_citations_passes_when_all_cited(self):
+        spec = self._make()
+        # Should not raise.
+        spec.validate_citations()
+
+    def test_citation_requires_page(self):
+        # AcceptanceCriterion's source is a Citation, and Citation.page is required.
+        with pytest.raises(Exception):
+            AcceptanceCriterion(
+                text="missing page",
+                source=Citation(section="3.2"),  # no page
+            )
+
+    def test_roundtrip_json(self):
+        spec = self._make()
+        data = spec.model_dump(mode="json")
+        restored = SectionSpec.model_validate(data)
+        assert restored.phase_id == spec.phase_id
+        assert restored.acceptance_criteria[0].source.page == 4
+
+    def test_critique_verdict_enum(self):
+        critique = SectionCritique(
+            phase_id="section_3_2",
+            verdict=CritiqueVerdict.verified,
+            reasons=["all good"],
+        )
+        data = critique.model_dump(mode="json")
+        assert data["verdict"] == "verified"
+        restored = SectionCritique.model_validate(data)
+        assert restored.verdict == CritiqueVerdict.verified
 
 
 # --- results.py ---

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Union
 
@@ -18,7 +19,7 @@ from .. import ui
 from ..commands import get_inbox
 from ..config import Config
 from ..events import get_emitter
-from ..interaction import UserAction, open_in_editor, prompt_skip_which_phase
+from ..interaction import UserAction, open_in_editor, prompt_long_running_phase, prompt_skip_which_phase
 
 if TYPE_CHECKING:
     from ..console import InteractiveConsole
@@ -27,6 +28,7 @@ from ..models.context import PostMortem, RetryContext
 from ..models.claims import ClaimsReport
 from ..models.results import ResultStatus, SubAgentResult
 from ..models.spec import EventType, FileStatus, PhaseStatus
+from ..storage.step_records import StepRecord, now as step_now, write_step_record
 from ..storage.workspace import WorkspaceManager
 from .agent import OrchestratorAgent
 from .failure import FailureHandler
@@ -42,13 +44,17 @@ class ExecutionLoop:
     def __init__(
         self,
         config: Config,
-        spec_manager: SpecManager,
+        spec_manager: SpecManager | None,
         workspace: WorkspaceManager,
         orchestrator_agent: OrchestratorAgent,
         on_phase_complete: Callable[[str, SubAgentResult], UserAction | asyncio.coroutines] | None = None,
+        on_phase_start: Callable[[str], asyncio.coroutines] | None = None,
         console: InteractiveConsole | None = None,
         cloud_provisioner: "CloudProvisioner | None" = None,
     ) -> None:
+        # spec_manager may be None at construction time in the model-orchestrator
+        # flow — the orchestrator's write_skeleton tool populates it on its
+        # first turn. Methods that need a spec must guard against None.
         self.config = config
         self.spec_manager = spec_manager
         self.workspace = workspace
@@ -57,18 +63,36 @@ class ExecutionLoop:
         async def _default_phase_complete(pid, r):
             return UserAction.CONTINUE
         self.on_phase_complete = on_phase_complete or _default_phase_complete
+        async def _default_phase_start(pid):
+            return None
+        self.on_phase_start = on_phase_start or _default_phase_start
         self.console = console
         self.cloud_provisioner = cloud_provisioner
         self.total_cost_usd: float = 0.0
+        # Hard LLM-spend cap. Set when total_cost_usd crosses
+        # config.llm_spend_cap_usd. The outer loop drains this and exits
+        # cleanly, marking remaining phases failed so the run can be resumed
+        # later under a fresh budget.
+        self._budget_exceeded: bool = False
         self.emitter = get_emitter()
         self._files_announced: set[str] = set()
         # Announce initial planned files + DAG so a viewer attached at startup
-        # has a complete picture even before the first phase runs.
+        # has a complete picture even before the first phase runs. In the
+        # model-orchestrator flow, spec_manager is None at construction time
+        # (the orchestrator's write_skeleton tool populates it later); the
+        # helper handles that and is also called again from inside that tool.
         if self.emitter:
             self._emit_initial_plan()
 
     def _emit_initial_plan(self) -> None:
-        """Emit file_planned for every file in the plan + an initial dag_updated."""
+        """Emit file_planned for every file in the plan + an initial dag_updated.
+
+        No-op when ``spec_manager`` is still None (model-orchestrator flow:
+        the loop is constructed before write_skeleton runs). Safe to call
+        again later — file_planned emissions dedupe via ``_files_announced``.
+        """
+        if self.spec_manager is None:
+            return
         plan = self.spec_manager.state.plan
         if plan is not None:
             for f in plan.files:
@@ -89,6 +113,8 @@ class ExecutionLoop:
     def _emit_dag_snapshot(self) -> None:
         """Emit a full DAG snapshot reflecting current per-phase status."""
         if not self.emitter:
+            return
+        if self.spec_manager is None:
             return
         plan = self.spec_manager.state.plan
         nodes = []
@@ -186,6 +212,38 @@ class ExecutionLoop:
         except Exception:
             logger.exception("Failed to project run-complete journal row; continuing")
 
+    def _check_llm_budget(self, source: str) -> None:
+        """If total LLM spend has crossed the configured cap, set the
+        abort flag and emit a loud error. The outer loop honours the flag
+        between iterations and exits cleanly.
+
+        ``source`` is a short label (e.g. ``"sub-agent"``, ``"orchestrator"``)
+        included in the log line so the operator knows which call type
+        pushed the total over.
+        """
+        cap = getattr(self.config, "llm_spend_cap_usd", 0.0) or 0.0
+        if cap <= 0 or self._budget_exceeded:
+            return
+        if self.total_cost_usd < cap:
+            return
+        self._budget_exceeded = True
+        msg = (
+            f"LLM SPEND CAP EXCEEDED: total ${self.total_cost_usd:.2f} ≥ "
+            f"cap ${cap:.2f} (last cost from {source}). Aborting run — "
+            f"remaining phases will be marked failed. Raise --llm-budget / "
+            f"RB_LLM_SPEND_CAP_USD and resume to continue."
+        )
+        logger.error(msg)
+        ui.error(f"    {msg}")
+        if self.emitter:
+            self.emitter.emit(
+                "agent_message",
+                agent_id="orchestrator",
+                parent_id=None,
+                role="system",
+                text=msg,
+            )
+
     def _project_phase_outcome(self, phase_id: str, result: SubAgentResult, duration_seconds: float | None) -> None:
         """Append a per-phase row to <project_root>/notes/journal.md."""
         try:
@@ -216,6 +274,364 @@ class ExecutionLoop:
             summary=summary,
         )
 
+    # ──────────────────────────────────────────────────────────────────
+    # Per-attempt step records (Stage 1)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _emit_step_started(self, phase_id: str, retry_num: int, role: str) -> None:
+        if not self.emitter:
+            return
+        self.emitter.emit(
+            "step_started",
+            agent_id=f"phase:{phase_id}",
+            parent_id="orchestrator",
+            role=role,
+            retry_num=retry_num,
+        )
+
+    def _emit_step_completed(
+        self,
+        phase_id: str,
+        retry_num: int,
+        role: str,
+        *,
+        started_at: float,
+        cost_usd: float | None = None,
+        **extra,
+    ) -> None:
+        if not self.emitter:
+            return
+        self.emitter.emit(
+            "step_completed",
+            agent_id=f"phase:{phase_id}",
+            parent_id="orchestrator",
+            role=role,
+            retry_num=retry_num,
+            duration_s=step_now() - started_at,
+            cost_usd=cost_usd,
+            **extra,
+        )
+
+    def _write_query_step_record(
+        self,
+        *,
+        phase_id: str,
+        retry_num: int,
+        role: str,
+        started_at: float,
+        parsed: dict | None,
+        extra: dict | None = None,
+    ) -> None:
+        """Persist a step record using ``orchestrator_agent._last_query``.
+
+        Called immediately after a refiner/researcher/verifier invocation —
+        ``orchestrator_agent._last_query`` holds the most recent ``_query()``
+        record (prompt, response, cost, model, timings). If for some reason
+        no query was captured (e.g. an early return on missing phase) we
+        still emit a thin record so the manifest reflects the step ran.
+        """
+        try:
+            work_dir = self.workspace.phase_dir(phase_id)
+            q = getattr(self.orchestrator_agent, "_last_query", None)
+            # Aggregate orchestrator query cost into the global total so the
+            # LLM-spend cap covers refiner/verifier/post-mortem calls, not just
+            # sub-agent dispatches. Without this the cap would silently miss a
+            # meaningful chunk of spend (verifier alone runs once per phase).
+            if q is not None and q.cost_usd:
+                self.total_cost_usd += float(q.cost_usd)
+                self._check_llm_budget(source=f"orchestrator/{role}")
+            ended_at = step_now()
+            record = StepRecord(
+                role=role,
+                phase_id=phase_id,
+                retry_num=retry_num,
+                started_at=started_at,
+                ended_at=ended_at,
+                duration_s=ended_at - started_at,
+                cost_usd=q.cost_usd if q else None,
+                model=q.model if q else None,
+                prompt_role=q.prompt_role if q else None,
+                system_prompt=q.system_prompt if q else None,
+                prompt=q.prompt if q else None,
+                response_text=q.response_text if q else None,
+                parsed=parsed,
+                messages_received=list(q.messages_received) if q else [],
+                extra=extra or {},
+                status=(q.status if q else "ok"),
+            )
+            write_step_record(work_dir, record)
+        except Exception:
+            logger.exception("Failed to write step record (role=%s phase=%s)", role, phase_id)
+
+    def _write_builder_step_record(
+        self,
+        *,
+        phase_id: str,
+        retry_num: int,
+        started_at: float,
+        result: SubAgentResult,
+    ) -> None:
+        """Persist a thin builder-step record pointing at outputs/_result.json.
+
+        The full builder result is already persisted by the sub-agent at
+        ``<work_dir>/outputs/_result.json`` — we don't duplicate it here.
+        """
+        try:
+            work_dir = self.workspace.phase_dir(phase_id)
+            ended_at = step_now()
+            tr = result.test_report
+            record = StepRecord(
+                role="builder",
+                phase_id=phase_id,
+                retry_num=retry_num,
+                started_at=started_at,
+                ended_at=ended_at,
+                duration_s=ended_at - started_at,
+                cost_usd=result.cost_usd or None,
+                model=self.config.model,
+                prompt_role=f"builder-{phase_id}",
+                response_text=None,
+                parsed={
+                    "status": result.status.value,
+                    "summary": result.summary,
+                    "attempts_used": result.attempts_used,
+                    "is_spec_issue": result.is_spec_issue,
+                    "outputs": [o.model_dump() for o in result.outputs],
+                    "test_report": {
+                        "tests_run": tr.tests_run,
+                        "tests_passed": tr.tests_passed,
+                        "tests_failed": tr.tests_failed,
+                    },
+                },
+                extra={
+                    "result_json_path": "outputs/_result.json",
+                    "diagnostics": result.diagnostics,
+                },
+                status="ok" if result.status == ResultStatus.success else "error",
+            )
+            write_step_record(work_dir, record)
+        except Exception:
+            logger.exception("Failed to write builder step record for %s", phase_id)
+
+    # ──────────────────────────────────────────────────────────────────
+    # Operator interventions (Stage 3a)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _apply_pre_hook(self, phase_id: str, hook: str) -> int:
+        """Drain and apply any operator interventions queued for ``hook``.
+
+        Returns the number of commands applied.
+        """
+        try:
+            cmds = get_inbox().drain_interventions(phase_id, hook)
+        except Exception:
+            logger.exception("intervention: drain failed for phase=%s hook=%s", phase_id, hook)
+            return 0
+        applied = 0
+        for cmd in cmds:
+            try:
+                self._apply_intervention(cmd, phase_id=phase_id, hook=hook)
+                applied += 1
+            except Exception:
+                logger.exception("intervention: failed to apply cmd=%s at hook=%s", cmd, hook)
+        return applied
+
+    def _apply_between_phases_hook(self) -> bool:
+        """Drain force_retry / jump_back commands across all phases.
+
+        Returns True if any phase state was mutated (so callers know to
+        re-evaluate the runnable set).
+        """
+        try:
+            # We don't know phase_ids up front, so iterate over current phases
+            # and drain each. Also handle wildcard ("*", between_phases).
+            mutated = False
+            for phase in list(self.spec_manager.state.phases):
+                cmds = get_inbox().drain_interventions(phase.phase_id, "between_phases")
+                for cmd in cmds:
+                    try:
+                        self._apply_intervention(cmd, phase_id=phase.phase_id, hook="between_phases")
+                        mutated = True
+                    except Exception:
+                        logger.exception("intervention: failed to apply cmd=%s", cmd)
+            # Wildcard bucket
+            cmds = get_inbox().drain_interventions("*", "between_phases")
+            for cmd in cmds:
+                try:
+                    pid = cmd.get("payload", {}).get("phase_id") or cmd.get("payload", {}).get("to_phase_id")
+                    self._apply_intervention(cmd, phase_id=pid or "*", hook="between_phases")
+                    mutated = True
+                except Exception:
+                    logger.exception("intervention: failed to apply cmd=%s", cmd)
+            return mutated
+        except Exception:
+            logger.exception("intervention: between_phases drain failed")
+            return False
+
+    def _apply_intervention(self, cmd: dict, *, phase_id: str, hook: str) -> None:
+        """Apply one intervention command. Idempotent on cmd_id (deduped earlier)."""
+        ctype = cmd.get("type")
+        payload = cmd.get("payload", {}) or {}
+        rationale = payload.get("rationale") or f"user {ctype}"
+        cmd_id = cmd.get("cmd_id", "")
+        target_phase = payload.get("phase_id") or payload.get("to_phase_id") or phase_id
+
+        if ctype == "edit_refined_spec":
+            self._apply_edit_refined_spec(target_phase, payload, cmd_id=cmd_id)
+        elif ctype == "force_retry":
+            self._apply_force_retry(target_phase, payload)
+        elif ctype == "inject_note":
+            self._apply_inject_note(target_phase, payload, scope=payload.get("scope", "phase"))
+        elif ctype == "jump_back":
+            self._apply_jump_back(target_phase, payload)
+        else:
+            logger.warning("intervention: unknown type=%r", ctype)
+            return
+
+        # Audit: revision log + event stream.
+        try:
+            self.spec_manager.log_event(
+                EventType.user_intervened,
+                phase_id=target_phase if target_phase != "*" else None,
+                rationale=f"{ctype}: {rationale}",
+            )
+        except Exception:
+            logger.exception("intervention: failed to append revision_log entry")
+        self._emit_user_intervened(ctype, target_phase, hook, payload)
+
+    def _apply_edit_refined_spec(self, phase_id: str, payload: dict, *, cmd_id: str) -> None:
+        work_dir = self.workspace.phase_dir(phase_id)
+        context_dir = work_dir / "context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        refined_path = context_dir / "refined_spec.md"
+        mode = (payload.get("mode") or "replace").lower()
+        new_content = payload.get("content", "")
+
+        # Audit sidecar: save the prior version + the operator's content.
+        edits_dir = context_dir / "refined_spec_edits"
+        edits_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if refined_path.exists():
+                (edits_dir / f"{cmd_id or 'edit'}.prev.md").write_text(refined_path.read_text())
+            (edits_dir / f"{cmd_id or 'edit'}.new.md").write_text(new_content)
+        except Exception:
+            logger.exception("intervention: failed to write refined_spec_edits sidecar")
+
+        prior = refined_path.read_text() if refined_path.exists() else ""
+        if mode == "patch":
+            # Patch mode left intentionally simple: payload contains an
+            # ``old``/``new`` pair we substitute exactly once. Operators with
+            # complex needs should use replace.
+            old = payload.get("old", "")
+            if old and old in prior:
+                refined_path.write_text(prior.replace(old, new_content, 1))
+            else:
+                logger.warning("intervention: patch 'old' not found, falling back to append")
+                refined_path.write_text(prior + "\n\n" + new_content)
+        elif mode == "append":
+            refined_path.write_text(prior + "\n\n" + new_content)
+        else:  # replace (default)
+            refined_path.write_text(new_content)
+
+    def _apply_force_retry(self, phase_id: str, payload: dict) -> None:
+        rationale = payload.get("rationale") or "operator force_retry"
+        # invalidate_phase already cascades to downstream completed phases.
+        # When cascade=False, we re-mark the cascaded ones to their prior
+        # status — but for the common case cascade=True is what the operator
+        # wants. We keep the simple semantics: always cascade through
+        # invalidate_phase; downstream phases that haven't completed yet
+        # aren't touched anyway.
+        invalidated = self.spec_manager.invalidate_phase(phase_id, rationale=rationale)
+        logger.info("force_retry: invalidated %s", invalidated)
+        work_dir = self.workspace.phase_dir(phase_id)
+        context_dir = work_dir / "context"
+        if payload.get("reset_refined_spec"):
+            (context_dir / "refined_spec.md").unlink(missing_ok=True)
+        if payload.get("reset_research_cache"):
+            (context_dir / "research_notes.md").unlink(missing_ok=True)
+            (context_dir / "research_questions.json").unlink(missing_ok=True)
+
+    def _apply_inject_note(self, phase_id: str, payload: dict, *, scope: str) -> None:
+        text = (payload.get("text") or "").strip()
+        if not text:
+            return
+        ts = datetime.now().isoformat(timespec="seconds")
+        note_block = f"### {ts} — operator note\n\n{text}\n"
+        if scope == "global":
+            target = self.config.spec_dir / "operator_notes.md"
+        else:
+            target = self.workspace.phase_dir(phase_id) / "context" / "operator_notes.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        prior = target.read_text() if target.exists() else ""
+        target.write_text(prior + ("\n" if prior else "") + note_block)
+
+    def _apply_jump_back(self, phase_id: str, payload: dict) -> None:
+        rationale = payload.get("rationale") or "operator jump_back"
+        invalidated = self.spec_manager.invalidate_phase(phase_id, rationale=rationale)
+        logger.info("jump_back: invalidated %s (preserve_artifacts=%s)", invalidated, payload.get("preserve_artifacts", True))
+
+    def _read_operator_notes(self, phase_id: str, context_dir: "Path") -> str:
+        """Concatenate phase-scoped + global operator notes for this phase."""
+        chunks: list[str] = []
+        global_path = self.config.spec_dir / "operator_notes.md"
+        if global_path.exists():
+            try:
+                chunks.append("## Global operator notes\n\n" + global_path.read_text().strip())
+            except Exception:
+                pass
+        phase_path = context_dir / "operator_notes.md"
+        if phase_path.exists():
+            try:
+                chunks.append("## Phase operator notes\n\n" + phase_path.read_text().strip())
+            except Exception:
+                pass
+        return "\n\n".join(chunks)
+
+    def _maybe_prompt_long_phase(
+        self,
+        phase_id: str,
+        context_dir: "Path",
+        retry_num: int,
+    ) -> "UserAction | None":
+        """Return UserAction if the long-phase gate fires, else None.
+
+        The gate consults the refiner's persisted runtime estimate. It fires
+        only when the estimate exceeds the configured threshold and only on
+        the first attempt of a phase — retries reuse the operator's earlier
+        approval. Non-interactive runs log a warning and proceed.
+        """
+        threshold = self.config.long_phase_threshold_minutes
+        if threshold <= 0 or retry_num != 0:
+            return None
+        est_path = context_dir / "estimated_minutes.txt"
+        if not est_path.exists():
+            return None
+        try:
+            est_minutes = int(est_path.read_text().strip())
+        except (ValueError, OSError):
+            return None
+        if est_minutes <= threshold:
+            return None
+        if not self.config.interactive:
+            logger.warning(
+                "Phase %s estimated at %d min (threshold %d) — proceeding (non-interactive)",
+                phase_id, est_minutes, threshold,
+            )
+            return None
+        return prompt_long_running_phase(phase_id, est_minutes, threshold)
+
+    def _emit_user_intervened(self, ctype: str, phase_id: str, hook: str, payload: dict) -> None:
+        if not self.emitter:
+            return
+        self.emitter.emit(
+            "user_intervened",
+            agent_id=f"phase:{phase_id}" if phase_id != "*" else "orchestrator",
+            parent_id="orchestrator",
+            intervention=ctype,
+            hook=hook,
+            rationale=payload.get("rationale", ""),
+        )
+
     async def run(self) -> bool:
         """Execute all phases. Returns True if the run completed successfully."""
         import time
@@ -230,6 +646,31 @@ class ExecutionLoop:
             await self._surface_gpu_estimate()
 
         while True:
+            # Stage 3a: drain operator interventions that mutate phase state
+            # (force_retry, jump_back). Runs every iteration so a command
+            # issued during a phase execution is honoured on the next pass.
+            self._apply_between_phases_hook()
+
+            # LLM-budget guard: if a prior phase pushed total spend over the
+            # cap, abort cleanly here. Marking remaining phases failed (rather
+            # than leaving them pending) ensures the outer caller sees a hard
+            # stop and the run can be resumed later without re-running what
+            # already completed.
+            if self._budget_exceeded:
+                cap = getattr(self.config, "llm_spend_cap_usd", 0.0) or 0.0
+                rationale = (
+                    f"LLM spend cap exceeded: ${self.total_cost_usd:.2f} ≥ ${cap:.2f}"
+                )
+                for p in self.spec_manager.state.phases:
+                    if p.status not in (PhaseStatus.completed, PhaseStatus.failed):
+                        p.status = PhaseStatus.failed
+                self.spec_manager.save()
+                self.spec_manager.log_event(EventType.run_failed, rationale=rationale)
+                logger.error("Run aborted — %s", rationale)
+                self._project_run_complete(success=False)
+                self._emit_orchestrator_completed("failed", rationale)
+                return False
+
             # Check if all phases are done
             all_completed = all(
                 p.status == PhaseStatus.completed
@@ -266,6 +707,10 @@ class ExecutionLoop:
                 if in_progress:
                     logger.warning("No runnable phases but %d in progress — possible deadlock", len(in_progress))
                 else:
+                    # Last-chance drain: an operator may have just queued a
+                    # force_retry that would unblock the DAG.
+                    if self._apply_between_phases_hook():
+                        continue
                     logger.error("No runnable phases and nothing in progress — deadlock")
                     self.spec_manager.log_event(EventType.run_failed, rationale="Deadlock: no runnable phases")
                     self._emit_orchestrator_completed("failed", "Deadlock: no runnable phases")
@@ -273,6 +718,15 @@ class ExecutionLoop:
 
             # MVP: execute sequentially
             for phase_id in runnable:
+                # Pre-phase callback (optional). In the model-driven
+                # orchestrator flow, main.py does NOT call run(); the
+                # orchestrator's start_phase tool drives _execute_phase
+                # directly and handles approval via request_user_approval.
+                # This callback is kept for any future direct-driven usage.
+                try:
+                    await self.on_phase_start(phase_id)
+                except Exception:
+                    logger.exception("on_phase_start raised for %s; continuing", phase_id)
                 await self._execute_phase(phase_id)
                 break  # Re-enter the while loop to recompute runnable
 
@@ -307,25 +761,140 @@ class ExecutionLoop:
         refined_path = context_dir / "refined_spec.md"
         research_path = context_dir / "research_notes.md"
 
+        # The orchestrator now authors per-section specs UPFRONT (in parallel,
+        # before the execution loop starts). If a canonical section spec exists
+        # for this phase, use it as the refined spec on first attempt — the
+        # Refiner agent is demoted to "verify still valid" rather than "rewrite
+        # from scratch", saving an LLM call per phase.
+        upfront_spec = None
         if retry_num == 0 and not refined_path.exists():
+            try:
+                upfront_spec = self.spec_manager.store.load_section_spec(phase_id)
+            except Exception:
+                logger.exception("Failed to load upfront section spec for %s", phase_id)
+                upfront_spec = None
+
+        if upfront_spec is not None:
+            # Use the upfront section spec; skip the legacy Refiner authoring.
+            ui.info(f"  📝 Using upfront section spec for '{phase_id}' (refiner skipped)")
+            refined_path.write_text(upfront_spec.spec_markdown)
+            self._emit_step_started(phase_id, retry_num, "refiner")
+            self._emit_step_completed(
+                phase_id, retry_num, "refiner",
+                started_at=step_now(),
+                source="upfront_section_spec",
+                skipped=True,
+            )
+            research_questions: list[str] = []
+        elif retry_num == 0 and not refined_path.exists():
+            self._apply_pre_hook(phase_id, "pre_refiner")
             ui.info(f"  📝 Plan refiner running for section '{phase_id}'...")
+            self._emit_step_started(phase_id, retry_num, "refiner")
+            refiner_started = step_now()
             refinement = await self.orchestrator_agent.refine_section(
                 phase_id, self.spec_manager, Path(paper_path),
             )
             refined_md = refinement.get("refined_spec_md") or sub_spec.spec_markdown
             refined_path.write_text(refined_md)
             research_questions = refinement.get("research_questions") or []
+            # Persist the refiner's runtime estimate so the gate can re-check
+            # on retries without rerunning the refiner.
+            est_raw = refinement.get("estimated_runtime_minutes")
+            try:
+                est_minutes = max(1, int(est_raw)) if est_raw is not None else None
+            except (TypeError, ValueError):
+                est_minutes = None
+            if est_minutes is not None:
+                (context_dir / "estimated_minutes.txt").write_text(str(est_minutes))
+
+            # Sweep-driven best-guess values the refiner is asking the
+            # operator to confirm. See Step D of "Kill sweep-shaped
+            # acceptance criteria" in REFINER_SYSTEM_PROMPT. Persisted to
+            # disk so a retry-from-disk sees them; emitted as an event so
+            # the chat surfaces "approval needed" prominently. The actual
+            # approve/deny flow runs through the existing pre_builder hook
+            # and edit_refined_spec command — the operator either lets the
+            # refined spec stand (suggested values are baked in) or edits
+            # before the builder reads the spec.
+            pending_approvals = list(refinement.get("pending_approvals") or [])
+            approvals_path = context_dir / "pending_approvals.json"
+            if pending_approvals:
+                approvals_path.write_text(json.dumps(pending_approvals, indent=2))
+                ui.warning(
+                    f"  ⚠️  Refiner flagged {len(pending_approvals)} sweep-driven "
+                    f"best-guess value(s) needing operator approval for '{phase_id}':"
+                )
+                for item in pending_approvals:
+                    q = (item.get("question") or "").strip()
+                    v = (item.get("suggested_value") or "").strip()
+                    ui.warning(f"      • {q} → suggested: {v}")
+                ui.warning(
+                    f"      Review {refined_path} (look for '❓ APPROVAL PENDING' "
+                    f"blockquotes) and edit / approve before the Builder runs."
+                )
+                emitter = get_emitter()
+                if emitter:
+                    emitter.emit(
+                        "refiner_pending_approvals",
+                        agent_id=f"phase:{phase_id}",
+                        parent_id="orchestrator",
+                        phase_id=phase_id,
+                        approvals=pending_approvals,
+                        refined_spec_path=str(refined_path),
+                    )
+            elif approvals_path.exists():
+                # Stale entry from a previous attempt — clear so retries don't
+                # re-flag values the operator already approved.
+                try:
+                    approvals_path.unlink()
+                except OSError:
+                    pass
+
+            self._write_query_step_record(
+                phase_id=phase_id,
+                retry_num=retry_num,
+                role="refiner",
+                started_at=refiner_started,
+                parsed=refinement,
+                extra={
+                    "num_research_questions": len(research_questions),
+                    "num_pending_approvals": len(pending_approvals),
+                    "estimated_runtime_minutes": est_minutes,
+                },
+            )
+            self._emit_step_completed(phase_id, retry_num, "refiner", started_at=refiner_started)
             if research_questions:
                 (context_dir / "research_questions.json").write_text(
                     json.dumps(research_questions, indent=2)
                 )
+                self._apply_pre_hook(phase_id, "pre_researcher")
                 ui.info(f"  🔬 Researcher running ({len(research_questions)} question(s))...")
+                self._emit_step_started(phase_id, retry_num, "researcher")
+                researcher_started = step_now()
                 research = await self.orchestrator_agent.research_for_section(
                     phase_id, research_questions, self.spec_manager, Path(paper_path),
                 )
                 notes_md = research.get("research_notes_md", "")
                 if notes_md.strip():
                     research_path.write_text(notes_md)
+                self._write_query_step_record(
+                    phase_id=phase_id,
+                    retry_num=retry_num,
+                    role="researcher",
+                    started_at=researcher_started,
+                    parsed=research,
+                    extra={
+                        "num_questions": len(research_questions),
+                        "num_sources": len(research.get("sources", [])),
+                    },
+                )
+                self._emit_step_completed(phase_id, retry_num, "researcher", started_at=researcher_started)
+
+        # Stage 3a: operator interventions targeting the builder fire here —
+        # right before refined_spec.md / research_notes.md / operator_notes.md
+        # are read into the sub_spec. edit_refined_spec rewrites refined_path
+        # in place; inject_note appends to operator_notes.md.
+        self._apply_pre_hook(phase_id, "pre_builder")
 
         # If refined / research artifacts exist on disk (from this attempt or
         # a previous retry), use them to enrich the builder's sub_spec.
@@ -336,6 +905,14 @@ class ExecutionLoop:
                 "\n\n## Research Notes (from Researcher agent)\n\n"
                 + research_path.read_text()
             )
+        # Operator-injected notes (phase-scoped + global) get prepended once
+        # at the front of the builder's spec so the agent reads them before
+        # the rest of the plan.
+        operator_notes = self._read_operator_notes(phase_id, context_dir)
+        if operator_notes:
+            sub_spec.spec_markdown = (
+                "## Operator notes\n\n" + operator_notes + "\n\n---\n\n" + sub_spec.spec_markdown
+            )
 
         retry_context = None
         prior_results = self.failure_handler.get_prior_results(phase_id)
@@ -344,6 +921,27 @@ class ExecutionLoop:
                 prior_results=prior_results,
                 post_mortem=self.failure_handler.get_post_mortem(phase_id),
             )
+
+        # Long-phase approval gate: if the refiner estimated this phase will
+        # run over the threshold, prompt the operator before burning compute.
+        # Fires at most once per phase (retries skip the gate — the operator
+        # already approved this phase when it first reached the threshold).
+        gate_action = self._maybe_prompt_long_phase(phase_id, context_dir, retry_num)
+        if gate_action == UserAction.SKIP:
+            self.spec_manager.set_phase_status(
+                phase_id, PhaseStatus.completed, "Skipped by operator (long-phase gate)",
+            )
+            ui.info(f"Skipped phase '{phase_id}' at long-phase gate.")
+            return
+        if gate_action == UserAction.ABORT:
+            self.spec_manager.log_event(
+                EventType.run_failed, rationale=f"Aborted by user at long-phase gate ({phase_id})"
+            )
+            for p in self.spec_manager.state.phases:
+                if p.status not in (PhaseStatus.completed, PhaseStatus.failed):
+                    p.status = PhaseStatus.failed
+            self.spec_manager.save()
+            return
 
         # Run sub-agent (with interactive console if available)
         logger.info("Dispatching sub-agent for phase=%s retry=%d", phase_id, retry_num)
@@ -360,6 +958,7 @@ class ExecutionLoop:
                 parent_id="orchestrator",
                 kind="subagent",
                 title=phase.title or phase_id,
+                retry_num=retry_num,
             )
             self._emit_dag_snapshot()
 
@@ -389,7 +988,15 @@ class ExecutionLoop:
                     )
             if self.console:
                 self.console.print_activity(phase_id, kind, detail)
-            elif kind == "done":
+                return
+            # The inline viewer (rich-based transcript in the same terminal)
+            # already renders the same content via its agent_thinking /
+            # agent_tool emitter subscriptions. Writing a status_line on top
+            # produces duplicate output. Suppress when the viewer is up.
+            from ..viewer.inline import get_active_viewer
+            if get_active_viewer() is not None:
+                return
+            if kind == "done":
                 ui.clear_status_line()
                 ui.activity_done(phase_id, detail)
             else:
@@ -430,18 +1037,68 @@ class ExecutionLoop:
                         f"    Provisioned Lambda {compute_handle.machine.instance_type} "
                         f"({compute_handle.machine.public_ip}) for phase '{phase_id}'"
                     )
-                    if emitter:
-                        emitter.emit(
-                            "compute_provisioned",
-                            agent_id=f"phase:{phase_id}",
-                            parent_id="orchestrator",
-                            instance_id=compute_handle.machine.id,
-                            instance_type=compute_handle.machine.instance_type,
-                            public_ip=compute_handle.machine.public_ip,
-                        )
-            except Exception:
-                logger.exception("Cloud provisioning failed for phase=%s; continuing locally", phase_id)
-                compute_handle = None
+            except Exception as exc:
+                # Fail loud: the prompt rule says GPU-needed phases must NOT
+                # silently fall back to local CPU (training quietly runs on
+                # the wrong device for hours, burns $ on wasted compute, and
+                # the operator only notices when the Lambda dashboard is empty).
+                # Mark the phase failed with a clear diagnostic so the loop
+                # stops re-picking it and the operator can fix the underlying
+                # cause (typically an expired LAMBDA_API_KEY → 401) and resume.
+                logger.exception(
+                    "Cloud provisioning failed for phase=%s; refusing local fallback",
+                    phase_id,
+                )
+                err_type = type(exc).__name__
+                err_msg = str(exc)
+                remediation = (
+                    "If this is a 401 Unauthorized, your LAMBDA_API_KEY is "
+                    "invalid/expired — rotate it and resume the phase. "
+                    "Verify with: curl -u \"$LAMBDA_API_KEY:\" "
+                    "https://cloud.lambda.ai/api/v1/instance-types"
+                )
+                ui.error(
+                    f"    Cloud GPU provisioning FAILED for '{phase_id}': "
+                    f"{err_type}: {err_msg}"
+                )
+                ui.error(f"    {remediation}")
+                ui.error(
+                    f"    Phase '{phase_id}' marked failed (will NOT fall back "
+                    f"to local CPU). Fix the cloud issue, then resume."
+                )
+                failure_result = SubAgentResult(
+                    status=ResultStatus.failure,
+                    phase_id=phase_id,
+                    summary=(
+                        f"Cloud GPU provisioning failed ({err_type}): {err_msg}. "
+                        f"Refusing local-CPU fallback per spec rule."
+                    ),
+                    diagnostics={
+                        "cloud_provisioning_failed": True,
+                        "error_type": err_type,
+                        "error": err_msg,
+                        "remediation": remediation,
+                    },
+                )
+                self.failure_handler.record_result(phase_id, failure_result)
+                self.spec_manager.set_phase_status(
+                    phase_id, PhaseStatus.failed,
+                    f"Cloud provisioning failed: {err_type}",
+                )
+                self.spec_manager.save()
+                if emitter:
+                    emitter.emit(
+                        "agent_message",
+                        agent_id=f"phase:{phase_id}",
+                        parent_id="orchestrator",
+                        role="system",
+                        text=(
+                            f"Cloud GPU provisioning failed: {err_type}: {err_msg}\n\n"
+                            f"{remediation}\n\n"
+                            f"Phase marked failed — refusing to fall back to local CPU."
+                        ),
+                    )
+                return
 
         sub_agent = SubAgent(
             config=self.config,
@@ -452,6 +1109,7 @@ class ExecutionLoop:
             extra_user_messages=queued_msgs,
             cloud_provisioner=self.cloud_provisioner,
             compute_handle=compute_handle,
+            access_approval_callback=getattr(self, "_access_approval_callback", None),
         )
 
         # Start interactive console alongside agent execution
@@ -460,10 +1118,24 @@ class ExecutionLoop:
             console_task = asyncio.create_task(self.console.run())
 
         try:
+            self._emit_step_started(phase_id, retry_num, "builder")
+            builder_started = step_now()
             result = await sub_agent.run()
             self.total_cost_usd += result.cost_usd
             if result.cost_usd > 0:
                 ui.info(f"    Phase cost: ${result.cost_usd:.2f} | Total: ${self.total_cost_usd:.2f}")
+            self._check_llm_budget(source=f"sub-agent/{phase_id}")
+            self._write_builder_step_record(
+                phase_id=phase_id,
+                retry_num=retry_num,
+                started_at=builder_started,
+                result=result,
+            )
+            self._emit_step_completed(
+                phase_id, retry_num, "builder",
+                started_at=builder_started,
+                cost_usd=result.cost_usd,
+            )
 
             # Log result details
             logger.info(
@@ -509,13 +1181,6 @@ class ExecutionLoop:
                 try:
                     await compute_handle.teardown()
                     logger.info("Tore down cloud machine for phase=%s", phase_id)
-                    if emitter:
-                        emitter.emit(
-                            "compute_terminated",
-                            agent_id=f"phase:{phase_id}",
-                            parent_id="orchestrator",
-                            instance_id=compute_handle.machine.id,
-                        )
                 except Exception:
                     logger.exception(
                         "Failed to teardown cloud machine id=%s for phase=%s; "
@@ -868,29 +1533,60 @@ class ExecutionLoop:
     async def _handle_result(self, phase_id: str, result: SubAgentResult) -> None:
         """Process a sub-agent result: accept, retry, or fail."""
         if result.status == ResultStatus.success:
-            # Section Verifier (replaces the old acceptance_review). Returns a
-            # richer payload (status, evidence, claims_verified) we persist to
-            # the section's context dir for diagnostics.
+            # Section Verifier: deterministic checks + tool-free LLM judge.
+            # Payload includes ``deterministic_checks`` and the judge's raw
+            # JSON; persisted to the section's context dir for diagnostics.
+            verifier_retry_num = self.failure_handler.retries_used(phase_id)
+            self._apply_pre_hook(phase_id, "pre_verifier")
             try:
                 review_work_dir = getattr(self, "_current_work_dir", None)
                 ui.info(f"  ✅ Section verifier running for '{phase_id}'...")
+                self._emit_step_started(phase_id, verifier_retry_num, "verifier")
+                verifier_started = step_now()
                 accepted, feedback, verifier_payload = await self.orchestrator_agent.verify_section(
                     phase_id, result, self.spec_manager, work_dir=review_work_dir,
                 )
                 # Persist verifier output for the journal + post-hoc diagnostics
                 if review_work_dir is not None:
                     try:
-                        verify_path = review_work_dir / "context" / f"verification_retry_{self.failure_handler.retries_used(phase_id)}.json"
+                        verify_path = review_work_dir / "context" / f"verification_retry_{verifier_retry_num}.json"
                         verify_path.parent.mkdir(parents=True, exist_ok=True)
                         verify_path.write_text(json.dumps(verifier_payload, indent=2))
                     except Exception:
                         logger.exception("Failed to persist verifier payload for %s", phase_id)
+                self._write_query_step_record(
+                    phase_id=phase_id,
+                    retry_num=verifier_retry_num,
+                    role="verifier",
+                    started_at=verifier_started,
+                    parsed=verifier_payload,
+                    extra={"accepted": accepted, "feedback": feedback},
+                )
+                self._emit_step_completed(
+                    phase_id, verifier_retry_num, "verifier",
+                    started_at=verifier_started,
+                    accepted=accepted,
+                )
             except asyncio.TimeoutError:
-                logger.warning("Section verifier timed out for phase=%s. Auto-accepting.", phase_id)
-                accepted, feedback = True, None
+                # Fail-closed: timeout means we couldn't verify, not that
+                # the section is good. Counts as a rejection so the section
+                # goes back through the retry pipeline rather than slipping
+                # through as silently-accepted.
+                logger.warning(
+                    "Section verifier timed out for phase=%s — REJECTING (fail-closed)",
+                    phase_id,
+                )
+                accepted, feedback = False, "Section verifier timed out (fail-closed)"
             except Exception as e:
-                logger.warning("Section verifier failed for phase=%s: %s. Auto-accepting.", phase_id, e)
-                accepted, feedback = True, None
+                # Fail-closed: any unexpected exception in the verifier
+                # itself is treated as rejection, not acceptance. The old
+                # auto-accept behavior turned every verifier bug into a
+                # rubber-stamp.
+                logger.warning(
+                    "Section verifier failed for phase=%s: %s — REJECTING (fail-closed)",
+                    phase_id, e,
+                )
+                accepted, feedback = False, f"Section verifier crashed: {e}"
             if accepted:
                 self.spec_manager.set_phase_status(
                     phase_id, PhaseStatus.completed, f"Accepted: {result.summary[:100]}",
@@ -974,6 +1670,446 @@ class ExecutionLoop:
                 f"Exhausted {self.config.max_retries} retries: {result.summary[:100]}",
             )
             self._update_plan_for_phase(phase_id, PhaseStatus.failed)
+
+    # ─── Per-step methods for the model-driven orchestrator path ─────────
+    #
+    # These are called by the per-step MCP tools (run_refiner, run_researcher,
+    # run_builder, run_verifier) in orchestrator/runtime_tools.py. They run
+    # ONE step of the per-section chain, emit the same events as _execute_phase
+    # so the chat / trace surfaces light up identically, and update the
+    # failure_handler so retry budgets stay accurate.
+    #
+    # Unlike _execute_phase, these methods do NOT auto-retry on failure,
+    # do NOT run the post-mortem / spec-amendment logic, and do NOT advance
+    # the phase to its next status. The orchestrator (model) decides those
+    # next actions by reading the returned summary and calling the next tool.
+
+    async def _step_refiner(self, phase_id: str) -> dict:
+        """Run the refiner step for a phase.
+
+        If an upfront section spec exists at canonical_spec/sections/<id>.md,
+        it's used as the refined spec and the LLM refiner is skipped (matches
+        _execute_phase's caching). Otherwise calls orchestrator_agent.refine_section.
+
+        Writes refined_spec.md to phases/<id>/context/. Returns
+        ``{"source": "upfront"|"refiner_run"|"cached", "research_questions": [...]}``.
+        """
+        work_dir = self.workspace.create_phase_dir(phase_id)
+        self._current_work_dir = work_dir
+        context_dir = work_dir / "context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        refined_path = context_dir / "refined_spec.md"
+        retry_num = self.failure_handler.retries_used(phase_id)
+
+        # Already produced on a prior attempt? Reuse.
+        if refined_path.exists():
+            questions_path = context_dir / "research_questions.json"
+            questions: list[str] = []
+            if questions_path.exists():
+                try:
+                    questions = json.loads(questions_path.read_text()) or []
+                except Exception:
+                    questions = []
+            return {
+                "source": "cached",
+                "research_questions": questions,
+                "path": str(refined_path),
+            }
+
+        # Try the upfront section spec authored during stage 2.
+        try:
+            upfront_spec = self.spec_manager.store.load_section_spec(phase_id)
+        except Exception:
+            logger.exception("_step_refiner: load_section_spec failed for %s", phase_id)
+            upfront_spec = None
+
+        if upfront_spec is not None:
+            ui.info(f"  📝 Using upfront section spec for '{phase_id}' (refiner skipped)")
+            refined_path.write_text(upfront_spec.spec_markdown)
+            self._emit_step_started(phase_id, retry_num, "refiner")
+            self._emit_step_completed(
+                phase_id, retry_num, "refiner",
+                started_at=step_now(),
+                source="upfront_section_spec",
+                skipped=True,
+            )
+            return {
+                "source": "upfront",
+                "research_questions": [],
+                "path": str(refined_path),
+            }
+
+        # Fresh refiner run.
+        self._apply_pre_hook(phase_id, "pre_refiner")
+        ui.info(f"  📝 Plan refiner running for section '{phase_id}'...")
+        self._emit_step_started(phase_id, retry_num, "refiner")
+        refiner_started = step_now()
+        paper_path = Path(self.config.paper_path).resolve()
+        refinement = await self.orchestrator_agent.refine_section(
+            phase_id, self.spec_manager, paper_path,
+        )
+        refined_md = refinement.get("refined_spec_md") or ""
+        if not refined_md.strip():
+            # Fall back to extracting from sub_spec — matches _execute_phase.
+            sub_spec = self.spec_manager.extract_sub_spec(phase_id, paper_path=str(paper_path))
+            refined_md = sub_spec.spec_markdown
+        refined_path.write_text(refined_md)
+        questions: list[str] = refinement.get("research_questions") or []
+        if questions:
+            (context_dir / "research_questions.json").write_text(
+                json.dumps(questions, indent=2)
+            )
+        self._write_query_step_record(
+            phase_id=phase_id,
+            retry_num=retry_num,
+            role="refiner",
+            started_at=refiner_started,
+            parsed=refinement,
+            extra={"num_research_questions": len(questions)},
+        )
+        self._emit_step_completed(phase_id, retry_num, "refiner", started_at=refiner_started)
+        return {
+            "source": "refiner_run",
+            "research_questions": questions,
+            "path": str(refined_path),
+        }
+
+    async def _step_researcher(
+        self, phase_id: str, questions: list[str] | None = None,
+    ) -> dict:
+        """Run the researcher step for a phase.
+
+        Early-returns ``{"skipped": True}`` if no research questions exist
+        (either from arg or from cached research_questions.json). Otherwise
+        calls orchestrator_agent.research_for_section, writes research_notes.md.
+
+        Returns ``{"skipped": bool, "sources": [...], "num_questions": N}``.
+        """
+        work_dir = self.workspace.create_phase_dir(phase_id)
+        self._current_work_dir = work_dir
+        context_dir = work_dir / "context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        research_path = context_dir / "research_notes.md"
+        retry_num = self.failure_handler.retries_used(phase_id)
+
+        # Already done on prior attempt? Reuse.
+        if research_path.exists():
+            return {
+                "skipped": False,
+                "cached": True,
+                "sources": [],
+                "path": str(research_path),
+            }
+
+        # Resolve questions: arg first, else look for cached file from the
+        # refiner step.
+        if questions is None:
+            qpath = context_dir / "research_questions.json"
+            if qpath.exists():
+                try:
+                    questions = json.loads(qpath.read_text()) or []
+                except Exception:
+                    questions = []
+            else:
+                questions = []
+
+        if not questions:
+            return {"skipped": True, "reason": "no research questions"}
+
+        self._apply_pre_hook(phase_id, "pre_researcher")
+        ui.info(f"  🔬 Researcher running ({len(questions)} question(s))...")
+        self._emit_step_started(phase_id, retry_num, "researcher")
+        researcher_started = step_now()
+        paper_path = Path(self.config.paper_path).resolve()
+        research = await self.orchestrator_agent.research_for_section(
+            phase_id, questions, self.spec_manager, paper_path,
+        )
+        notes_md = research.get("research_notes_md", "") or ""
+        if notes_md.strip():
+            research_path.write_text(notes_md)
+        sources = research.get("sources") or []
+        self._write_query_step_record(
+            phase_id=phase_id,
+            retry_num=retry_num,
+            role="researcher",
+            started_at=researcher_started,
+            parsed=research,
+            extra={"num_questions": len(questions), "num_sources": len(sources)},
+        )
+        self._emit_step_completed(
+            phase_id, retry_num, "researcher", started_at=researcher_started,
+        )
+        return {
+            "skipped": False,
+            "cached": False,
+            "sources": sources,
+            "num_questions": len(questions),
+            "path": str(research_path) if notes_md.strip() else None,
+        }
+
+    async def _step_builder(self, phase_id: str) -> SubAgentResult:
+        """Run the Builder sub-agent for a phase.
+
+        Builds enriched sub_spec from refined_spec.md + research_notes.md +
+        operator_notes.md, handles cloud GPU provisioning, dispatches the
+        SubAgent, records the result via FailureHandler, tears down the
+        cloud machine on exit. Returns the structured SubAgentResult.
+
+        Does NOT run the verifier (that's _step_verifier) or trigger any
+        retry / spec-amendment logic (that's the orchestrator's decision).
+        """
+        phase = self.spec_manager.state.get_phase(phase_id)
+        if phase is None:
+            raise ValueError(f"Unknown phase: {phase_id}")
+
+        work_dir = self.workspace.create_phase_dir(phase_id)
+        self._current_work_dir = work_dir
+        context_dir = work_dir / "context"
+        context_dir.mkdir(parents=True, exist_ok=True)
+        refined_path = context_dir / "refined_spec.md"
+        research_path = context_dir / "research_notes.md"
+        retry_num = self.failure_handler.retries_used(phase_id)
+
+        self.spec_manager.set_phase_status(
+            phase_id, PhaseStatus.in_progress,
+            f"Builder starting (retry {retry_num})" if retry_num else "Builder starting",
+        )
+        self._update_plan_for_phase(phase_id, PhaseStatus.in_progress)
+
+        paper_path = str(Path(self.config.paper_path).resolve())
+        sub_spec = self.spec_manager.extract_sub_spec(phase_id, paper_path=paper_path)
+
+        self._apply_pre_hook(phase_id, "pre_builder")
+
+        # Enrich sub_spec from disk artifacts produced by earlier steps.
+        if refined_path.exists():
+            sub_spec.spec_markdown = refined_path.read_text()
+        if research_path.exists():
+            sub_spec.spec_markdown += (
+                "\n\n## Research Notes (from Researcher agent)\n\n"
+                + research_path.read_text()
+            )
+        operator_notes = self._read_operator_notes(phase_id, context_dir)
+        if operator_notes:
+            sub_spec.spec_markdown = (
+                "## Operator notes\n\n" + operator_notes
+                + "\n\n---\n\n" + sub_spec.spec_markdown
+            )
+
+        retry_context = None
+        prior_results = self.failure_handler.get_prior_results(phase_id)
+        if prior_results:
+            retry_context = RetryContext(
+                prior_results=prior_results,
+                post_mortem=self.failure_handler.get_post_mortem(phase_id),
+            )
+
+        emitter = self.emitter
+
+        def _on_activity(kind: str, detail: str) -> None:
+            if emitter:
+                if kind == "thinking":
+                    emitter.emit(
+                        "agent_thinking",
+                        agent_id=f"phase:{phase_id}",
+                        parent_id="orchestrator",
+                        text=detail,
+                    )
+                elif kind in ("tool", "done"):
+                    emitter.emit(
+                        "agent_tool",
+                        agent_id=f"phase:{phase_id}",
+                        parent_id="orchestrator",
+                        summary=detail,
+                    )
+
+        # agent_started event so the chat + trace see the builder light up.
+        total_phases = len(self.spec_manager.state.phases)
+        completed = sum(
+            1 for p in self.spec_manager.state.phases if p.status == PhaseStatus.completed
+        )
+        phase_num = completed + 1
+        ui.step(
+            f"Phase '{phase_id}' [{phase_num}/{total_phases}]"
+            + (f" — retry {retry_num}" if retry_num else "")
+        )
+        if emitter:
+            emitter.emit(
+                "agent_started",
+                agent_id=f"phase:{phase_id}",
+                parent_id="orchestrator",
+                kind="subagent",
+                title=phase.title or phase_id,
+                retry_num=retry_num,
+            )
+            self._emit_dag_snapshot()
+
+        queued_msgs = get_inbox().drain(f"phase:{phase_id}")
+        if queued_msgs and emitter:
+            for m in queued_msgs:
+                emitter.emit(
+                    "agent_message",
+                    agent_id=f"phase:{phase_id}",
+                    parent_id="orchestrator",
+                    role="user",
+                    text=m[:2000],
+                )
+
+        # GPU provisioning (optional).
+        compute_handle = None
+        if self.cloud_provisioner is not None:
+            try:
+                try:
+                    full_spec_md = self.spec_manager.store.load_spec_md()
+                except Exception:
+                    full_spec_md = None
+                compute_handle = await self.cloud_provisioner.provision(
+                    sub_spec, work_dir, full_spec_markdown=full_spec_md,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Cloud provisioning failed for phase=%s (_step_builder)", phase_id,
+                )
+                failure = SubAgentResult(
+                    status=ResultStatus.failure,
+                    phase_id=phase_id,
+                    summary=f"Cloud GPU provisioning failed: {type(exc).__name__}: {exc}",
+                    diagnostics={"cloud_provisioning_failed": True, "error": str(exc)},
+                )
+                self.failure_handler.record_result(phase_id, failure)
+                self.spec_manager.set_phase_status(
+                    phase_id, PhaseStatus.failed, "Cloud provisioning failed",
+                )
+                return failure
+
+        sub_agent = SubAgent(
+            config=self.config,
+            sub_spec=sub_spec,
+            work_dir=work_dir,
+            retry_context=retry_context,
+            on_activity=_on_activity,
+            extra_user_messages=queued_msgs,
+            cloud_provisioner=self.cloud_provisioner,
+            compute_handle=compute_handle,
+            access_approval_callback=getattr(self, "_access_approval_callback", None),
+        )
+
+        try:
+            self._emit_step_started(phase_id, retry_num, "builder")
+            builder_started = step_now()
+            result = await sub_agent.run()
+            self.total_cost_usd += result.cost_usd
+            self._check_llm_budget(source=f"sub-agent/{phase_id}")
+            self._write_builder_step_record(
+                phase_id=phase_id,
+                retry_num=retry_num,
+                started_at=builder_started,
+                result=result,
+            )
+            self._emit_step_completed(
+                phase_id, retry_num, "builder",
+                started_at=builder_started,
+                cost_usd=result.cost_usd,
+            )
+            # Record result for retry accounting (orchestrator decides
+            # whether to actually retry — we just count the attempt).
+            self.failure_handler.record_result(phase_id, result)
+            return result
+        finally:
+            if compute_handle is not None:
+                try:
+                    await compute_handle.teardown()
+                except Exception:
+                    logger.exception(
+                        "Failed to teardown cloud machine for phase=%s", phase_id,
+                    )
+
+    async def _step_verifier(
+        self, phase_id: str, builder_result: SubAgentResult,
+    ) -> tuple[bool, dict]:
+        """Run the Section Verifier on a builder result.
+
+        Calls orchestrator_agent.verify_section, persists verification_retry_N.json,
+        emits step events. On accepted=True, updates phase status to completed
+        and propagates outputs. On accepted=False, records a failure result
+        (so retry budget counts) but does NOT auto-retry — the orchestrator
+        decides.
+
+        Returns ``(accepted, payload)``. payload is the structured verifier
+        output (deterministic_checks + llm_judge + feedback) — model uses it
+        to decide next steps on rejection.
+        """
+        retry_num = self.failure_handler.retries_used(phase_id)
+        work_dir = getattr(self, "_current_work_dir", None) or self.workspace.create_phase_dir(phase_id)
+        self._apply_pre_hook(phase_id, "pre_verifier")
+        ui.info(f"  ✅ Section verifier running for '{phase_id}'...")
+        self._emit_step_started(phase_id, retry_num, "verifier")
+        verifier_started = step_now()
+        accepted: bool
+        feedback: str | None
+        verifier_payload: dict
+        try:
+            accepted, feedback, verifier_payload = await self.orchestrator_agent.verify_section(
+                phase_id, builder_result, self.spec_manager, work_dir=work_dir,
+            )
+            verify_path = work_dir / "context" / f"verification_retry_{retry_num}.json"
+            verify_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                verify_path.write_text(json.dumps(verifier_payload, indent=2))
+            except Exception:
+                logger.exception("Failed to persist verifier payload for %s", phase_id)
+            self._write_query_step_record(
+                phase_id=phase_id,
+                retry_num=retry_num,
+                role="verifier",
+                started_at=verifier_started,
+                parsed=verifier_payload,
+                extra={"accepted": accepted, "feedback": feedback},
+            )
+        except asyncio.TimeoutError:
+            logger.warning("Verifier timed out for phase=%s — REJECTING", phase_id)
+            accepted, feedback = False, "Section verifier timed out (fail-closed)"
+            verifier_payload = {"error": "timeout"}
+        except Exception as e:
+            logger.warning("Verifier crashed for phase=%s: %s — REJECTING", phase_id, e)
+            accepted, feedback = False, f"Section verifier crashed: {e}"
+            verifier_payload = {"error": str(e)}
+        self._emit_step_completed(
+            phase_id, retry_num, "verifier",
+            started_at=verifier_started,
+            accepted=accepted,
+        )
+
+        if accepted:
+            # Mark complete + propagate outputs to downstream phases.
+            self.spec_manager.set_phase_status(
+                phase_id, PhaseStatus.completed,
+                f"Accepted: {(builder_result.summary or '')[:100]}",
+            )
+            phase = self.spec_manager.state.get_phase(phase_id)
+            if phase:
+                phase.outputs = builder_result.outputs
+                self._propagate_outputs_to_downstream(phase_id, builder_result.outputs)
+                self.spec_manager.save()
+            self._update_plan_for_phase(
+                phase_id, PhaseStatus.completed, outputs=builder_result.outputs,
+            )
+        else:
+            # Record as a failure so retry budget tracks the rejection. Do
+            # NOT change phase status — the model decides whether to retry,
+            # ask the user, or escalate to failed.
+            rejection = SubAgentResult(
+                status=ResultStatus.failure,
+                phase_id=phase_id,
+                summary=f"Acceptance rejected: {feedback}",
+                test_report=builder_result.test_report,
+                outputs=builder_result.outputs,
+            )
+            self.failure_handler.record_result(phase_id, rejection)
+
+        # Carry feedback into the payload for the tool's text summary.
+        verifier_payload = {**verifier_payload, "_accepted": accepted, "_feedback": feedback}
+        return accepted, verifier_payload
 
     def _update_plan_for_phase(
         self,

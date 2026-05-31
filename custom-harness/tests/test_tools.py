@@ -22,8 +22,8 @@ class TestToolConstants:
         assert "Bash" in BUILTIN_TOOLS
 
     def test_custom_tool_names(self):
-        assert "mcp__phase_tools__read_paper_section" in CUSTOM_TOOL_NAMES
-        assert "mcp__phase_tools__report_result" in CUSTOM_TOOL_NAMES
+        assert "mcp__phase__lookup_citation" in CUSTOM_TOOL_NAMES
+        assert "mcp__phase__report_result" in CUSTOM_TOOL_NAMES
 
 
 class TestCreatePhaseTools:

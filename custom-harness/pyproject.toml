@@ -30,6 +30,12 @@ dependencies = [
     # them as hard deps — pull them in explicitly.
     "opentelemetry-api>=1.20",
     "opentelemetry-sdk>=1.20",
+    # Local web UI (research-builder-app) — FastAPI app served on 127.0.0.1.
+    # uvicorn[standard] pulls in websockets + watchfiles + httptools.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    # /api/launch consumes multipart PDF uploads.
+    "python-multipart>=0.0.20",
 ]
 
 # (Removed): The [tui] extra used to install textual + prompt-toolkit for the
@@ -47,6 +53,8 @@ dependencies = [
 [project.scripts]
 research-builder = "research_builder.main:cli"
 rb-viewer = "research_builder.viewer.cli:main"
+rb-browse = "research_builder.viewer.browse_cli:main"
+research-builder-app = "research_builder.web.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/research_builder"]

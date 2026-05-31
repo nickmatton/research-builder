@@ -174,7 +174,9 @@ class LiveViewer:
             text = (ev.get("text") or "").strip()
             if not text:
                 return None
-            display = text[:200] + ("…" if len(text) > 200 else "")
+            # Let rich wrap long messages naturally — 200 chars was cutting
+            # off the orchestrator's intro and any meaningful narration.
+            display = text[:4000] + ("…" if len(text) > 4000 else "")
             line = Text()
             line.append(f"{time_part}  ", style="grey50")
             line.append(f"{agent_label}  ", style="grey50")

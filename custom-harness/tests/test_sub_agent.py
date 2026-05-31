@@ -143,7 +143,7 @@ class TestBuildSystemPrompt:
         )
         prompt = build_system_prompt(sub_spec)
         assert "Custom Phase" in prompt
-        assert "No specific guidance" in prompt
+        assert "## Section: Custom Phase" in prompt
 
 
 # ---------------------------------------------------------------------------

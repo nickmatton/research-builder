@@ -2,72 +2,69 @@
 
 [![tests](https://github.com/nickmatton/research-builder/actions/workflows/tests.yml/badge.svg)](https://github.com/nickmatton/research-builder/actions/workflows/tests.yml)
 
-A toolkit for reproducing research-paper results. **Two interfaces, one methodology**: an interactive Claude Code skill (slash commands + skills + scripts), and an autonomous Python harness (CLI that drives the same workflow unattended). Both share skill files, slash commands, helper tools, and the per-paper artifact format.
+Reproduce the numerical claims of a research paper end to end, from PDF to verified results. One methodology, two interfaces:
 
-The opinionated methodology: **claims-first, verification-ladder, post-mortem on every failure.**
+1. **Interactive** Claude Code skill workflow. Slash commands, skills, and helper scripts copied into a per-paper repo. You drive each rung of the verification ladder.
+2. **Autonomous** Python harness ([`custom-harness/`](custom-harness/)). A CLI that runs the same workflow unattended, with a single LLM-driven orchestrator and per-section sub-agent chains.
 
-## File tree
+Both interfaces share skills, slash commands, helper tools, and the per-paper artifact format. Output repos are interchangeable.
 
-```
-research-builder/
-├── bin/                       # toolkit-wide CLIs
-│   ├── lambda                 # Lambda Cloud GPU provisioning with hard spend cap
-│   ├── new-paper              # scaffold a new paper repo from skills/+commands/+tools/+paper-skeleton/
-│   └── research-builder       # autonomous-harness CLI entry (Phase 1, in progress)
-├── skills/                    # canonical methodology — copied to <paper-repo>/.claude/skills/
-│   ├── verification-ladder.md
-│   ├── post-mortem.md
-│   └── compare-to-paper.md
-├── commands/                  # canonical slash commands — copied to <paper-repo>/.claude/commands/
-│   ├── reproduce.md           # /reproduce
-│   ├── compare.md             # /compare
-│   ├── verify.md              # /verify
-│   └── post-mortem.md         # /post-mortem
-├── tools/                     # canonical reusable Python helpers — copied to <paper-repo>/scripts/
-│   ├── extract-paper-text.py  # PDF → paper.txt (one-shot)
-│   ├── compare-claims.py      # verify run metrics vs claims.yaml, emit markdown table
-│   └── lookup-citation.py     # Semantic Scholar wrapper
-├── paper-skeleton/            # per-paper PLACEHOLDERS — copied verbatim per paper
-│   ├── CLAUDE.md              # <PAPER TITLE> spec template
-│   ├── pyproject.toml         # per-paper Python deps template
-│   ├── notes/{claims, plan, journal}.{yaml, md}
-│   ├── scripts/{smoke,overfit-one-batch,reproduce}.sh   # paper-specific shell scaffolds
-│   └── (configs/, src/, tests/, .gitignore, README.md)
-├── custom-harness/            # the original 9.5k LoC Python orchestrator (peer interface)
-│   └── src/research_builder/
-└── papers/<slug>/             # produced by EITHER interface, identical layout
+## Quick start
+
+### Autonomous harness (zero setup)
+
+```bash
+cd custom-harness
+uv sync
+uv run research-builder --test
 ```
 
-Each top-level dir has its own README explaining its role.
+`--test` runs against the bundled 4-page test paper, writes to `/tmp/rb-test`, and implies `--auto` (no prompts) and `--dev` (uses your Claude Code subscription instead of an API key).
 
-## Two interfaces
+For a real paper:
 
-Both interfaces produce paper repos with identical layout — `notes/claims.yaml`, `notes/journal.md`, `notes/post-mortems/`, `runs/<run-id>/`, `src/`, `tests/`, `configs/`. Either workflow can pick up where the other left off.
+```bash
+uv run research-builder /path/to/paper.pdf -o ./workspace --auto
+```
 
-### Interactive — Claude Code skill workflow
+### Interactive skill workflow
 
 ```bash
 bin/new-paper bert ~/papers/bert /path/to/bert.pdf
 cd ~/papers/bert
-uv sync                                  # install per-paper deps
-python scripts/extract-paper-text.py     # → paper/paper.txt
-
-claude .                                 # open Claude Code in the paper repo
-# /reproduce, /compare, /verify, /post-mortem  ← drive interactively, with judgment
+uv sync
+python scripts/extract-paper-text.py     # paper/paper.txt
+claude .                                  # open Claude Code
+# /reproduce, /compare, /verify, /post-mortem
 ```
 
-The methodology in `<paper-repo>/.claude/skills/`. The slash commands in `<paper-repo>/.claude/commands/`. You drive each rung of the verification ladder.
+The skills and slash commands land at `~/papers/bert/.claude/{skills,commands}/`.
 
-### Autonomous — custom harness workflow
+## Methodology
 
-```bash
-bin/new-paper bert ~/papers/bert /path/to/bert.pdf
-bin/research-builder ~/papers/bert       # drives unattended
+Claims-first, verification-ladder, post-mortem on every failure.
+
+- **Claims-first**: extract every numerical assertion from the paper before writing any code. Each claim has a source (table, figure, section, page), an expected value, and a tolerance.
+- **Verification ladder**: smoke run on synthetic data, overfit one batch, full reproduction. Earlier rungs catch bugs cheaply.
+- **Post-mortem on failure**: every failed phase produces a structured analysis. The orchestrator decides whether to retry, amend the spec, or mark the claim impossible.
+
+Reference docs: [`skills/`](skills/).
+
+## Repo layout
+
+```
+research-builder/
+  bin/                  toolkit CLIs (new-paper, lambda, research-builder shim)
+  skills/               canonical methodology, copied into per-paper repos
+  commands/             canonical slash commands (/reproduce, /compare, /verify, /post-mortem)
+  tools/                reusable Python helpers (extract-paper-text, compare-claims, lookup-citation)
+  paper-skeleton/       per-paper placeholder layout (CLAUDE.md, notes/, scripts/, configs/)
+  custom-harness/       autonomous Python harness (see its own README)
+  papers/<slug>/        per-paper repos produced by either interface
+  MIGRATION_PLAN.md     phase history and roadmap
 ```
 
-The harness reads `~/papers/bert/CLAUDE.md` and `~/papers/bert/notes/claims.yaml` as inputs, spawns sub-agents per phase via the Claude Agent SDK, runs the same retry/post-mortem/spec-amendment loop the original orchestrator did, writes to the same per-paper artifact paths.
-
-**The harness is currently being resurrected** — the migration moved its source from `src/research_builder/` to `custom-harness/src/research_builder/` and several external integrations have rotted (Lambda API host migrated, Cloudflare User-Agent block, Claude Agent SDK version drift). See `MIGRATION_PLAN.md` for status. The interactive skill workflow is fully working today.
+Each top-level directory has its own README.
 
 ## How the toolkit composes
 
@@ -75,86 +72,69 @@ The harness reads `~/papers/bert/CLAUDE.md` and `~/papers/bert/notes/claims.yaml
 
 ```
 <paper-repo>/
-├── (placeholders from paper-skeleton/)
-├── scripts/
-│   ├── (shell scaffolds from paper-skeleton/scripts/)
-│   └── (Python tools from tools/)              # e.g. compare-claims.py
-└── .claude/
-    ├── skills/   ← from skills/
-    └── commands/ ← from commands/
+  (placeholders from paper-skeleton/)
+  scripts/
+    (shell scaffolds from paper-skeleton/scripts/)
+    (Python tools from tools/)
+  .claude/
+    skills/      from skills/
+    commands/    from commands/
 ```
 
-The toolkit-root directories are the **canonical masters**. Per-paper repos hold copies — paper repos stay self-contained (you can email one to a colleague who doesn't have the toolkit and they can run it). Updates to a master propagate to existing paper repos via `bin/new-paper-resync` (TODO; for now, `cp tools/*.py papers/<slug>/scripts/` etc.).
+The toolkit-root directories are canonical. Per-paper repos hold copies so they stay portable (you can email one to a colleague who does not have the toolkit). Updates to a master propagate via `cp tools/*.py papers/<slug>/scripts/` for now (resync command is TODO).
 
 ## Worked example
 
-`papers/attention-is-all-you-need/` is a worked reproduction of Vaswani et al. 2017. As of this commit, **the verification ladder is green through smoke run on synthetic data**:
+`papers/attention-is-all-you-need/` reproduces Vaswani et al. 2017. As of this commit the verification ladder is green through smoke run on synthetic data:
 
-- ✅ Scaffolded; PDF extracted (15 pages); CLAUDE.md + notes/claims.yaml populated from the paper (6 headline claims).
-- ✅ Real PyTorch implementation: `src/{attention, positional, transformer, train, eval, wmt, tokenize}.py` — paper-faithful (Adam β2=0.98, §5.3 warmup-then-decay LR, label smoothing ε=0.1, shared input/output embedding per §3.4 with √d_model scaling, beam search with Wu et al. length penalty, sacrebleu BLEU).
-- ✅ **32 unit tests pass**: `cd papers/attention-is-all-you-need && uv run pytest`.
-- ✅ **Overfit-one-batch**: loss → 0.0000 in ~250 steps with LS=0; → 0.78 with paper-faithful LS=0.1, which is exactly H(smoothed_dist) ≈ 0.77 — a label-smoothing artifact, not a model defect (verified by re-running with LS=0).
-- ✅ **Smoke run** (200 steps, fresh synthetic batches): pipeline executes end-to-end, no NaN, loss decreases.
-- ⏳ Real WMT 2014 EN-DE training run on a single A100 (~3–6 GPU-h) attempts the headline `table2_base_en_de_bleu = 27.3` claim. Pending GPU provision via `bin/lambda`. The big-model claims (28.4 / 41.8 BLEU) need 8x GPU × 3.5 days — explicitly out-of-budget, will land as `not_checked`.
+- Paper-faithful PyTorch implementation: attention, positional encoding, transformer, training, eval, WMT loader, BPE tokenizer.
+- 32 unit tests pass: `cd papers/attention-is-all-you-need && uv run pytest`.
+- Overfit-one-batch: loss converges to 0.0000 in ~250 steps with label smoothing off, to 0.78 with paper-faithful LS=0.1 (matches `H(smoothed_dist)`).
+- Smoke run: 200 steps on synthetic batches, pipeline runs end to end, no NaN.
+- Pending: WMT 2014 EN-DE training run on a single A100 (~3 to 6 GPU-h) targeting the headline `table2_base_en_de_bleu = 27.3` claim. Big-model claims (28.4 / 41.8 BLEU) need 8x GPU x 3.5 days and are explicitly out of budget.
 
-See `papers/attention-is-all-you-need/CLAUDE.md` for the full spec, `notes/plan.md` for the implementation plan, `notes/journal.md` for the run log.
+See `papers/attention-is-all-you-need/CLAUDE.md` for the spec, `notes/plan.md` for the implementation plan, `notes/journal.md` for the run log.
 
-## Cloud GPU access (Lambda Labs)
+## Cloud GPU access
 
 `bin/lambda` provisions Lambda Cloud instances under a hard cumulative spend cap.
 
 ```bash
-export LAMBDA_API_KEY=secret_xxx          # https://cloud.lambda.ai/api-keys
-export LAMBDA_BUDGET_USD=20               # default 20; cumulative across all launches
+export LAMBDA_API_KEY=secret_xxx
+export LAMBDA_BUDGET_USD=20
 
-bin/lambda price gpu_1x_a100              # → "$1.29/hr"
-bin/lambda budget                         # cap, cumulative, remaining
+bin/lambda price gpu_1x_a100
+bin/lambda budget
 bin/lambda provision gpu_1x_a100 --max-hours 6 --work-dir papers/attention-is-all-you-need
-# → writes .lambda/env + remote_run.sh into the work dir, schedules nohup auto-teardown
 
 cd papers/attention-is-all-you-need
-bash remote_run.sh "uv sync && bash scripts/reproduce.sh"   # rsync work-dir → remote, run, rsync runs/ back
+bash remote_run.sh "uv sync && bash scripts/reproduce.sh"
 
-bin/lambda list                           # show ledger
-bin/lambda teardown <id>                  # explicit teardown (auto-fires at deadline too)
-bin/lambda check                          # cron-friendly: terminates overdue instances
+bin/lambda list
+bin/lambda teardown <id>
+bin/lambda check                   # cron-friendly; terminates overdue instances
 ```
 
-State at `~/.lambda/state.json`. Each provision *eagerly* commits `max_hours × hourly_rate` to the ledger; teardown replaces the estimate with actual elapsed cost. `would_exceed` check is plain arithmetic — provision is refused, not warned, if it would breach `LAMBDA_BUDGET_USD`. `bin/lambda` is stdlib-only Python.
-
-## The original harness (now a peer interface)
-
-Before this restructure, `research-builder` was a 9.5k LoC custom Python harness. The orchestrator + sub-agent + retry-budget machinery preserved at [`custom-harness/`](custom-harness/) (with its own README); the **methodology** that was encoded inside it is now extracted to top-level `skills/` + `commands/` + `tools/`, available to both interfaces.
-
-The harness was the right thing to build first. It validated the methodology end-to-end. Then extracting the durable patterns and making them shareable across two interfaces was the right next move.
-
-## Migration history
-
-| Commit | Phase | Lines |
-|---|---|---|
-| [`e20cd93`](../../commit/e20cd93) | WIP checkpoint of the original harness | +9797 |
-| [`99294c6`](../../commit/99294c6) | Migration plan committed | +193 |
-| [`e6f5c3d`](../../commit/e6f5c3d) | Phase 1: extract methodology to skills + templates | +456 |
-| [`8b96670`](../../commit/8b96670) | Phase 2: MCP servers + paper template | +830 |
-| [`d2014ca`](../../commit/d2014ca) | Phase 2.5: drop MCP, switch to built-in tools | −249 net |
-| [`7d8e083`](../../commit/7d8e083) | Phase 3 (partial): scaffold attention-is-all-you-need + README rewrite | +1901 |
-| [`bb3af4b`](../../commit/bb3af4b) | Phase 3: real implementation plan for the paper | +59 |
-| [`1ad9c17`](../../commit/1ad9c17) | Phase 3: real PyTorch transformer + verification ladder green through smoke | +765 |
-| [`d6d96e7`](../../commit/d6d96e7) | CI workflow + bin/new-paper scaffolder | +136 |
-| [`fd37797`](../../commit/fd37797) | bin/lambda — Lambda Cloud GPU provisioning with hard cap | +653 |
-| [`762f646`, `441263e`, `cc333ba`](../../commits) | Archive harness → custom-harness/ | rename |
-| [`c497b0f`](../../commit/c497b0f) | WMT loader + BPE tokenizer + beam-search eval (32 tests) | +3327 |
-| _(this commit)_ | Restructure toolkit: split paper-template → skills/+commands/+tools/+paper-skeleton/ | rename + new |
-
-See [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md) for the phase plan and what's next.
+State at `~/.lambda/state.json`. Each provision eagerly commits `max_hours x hourly_rate` to the ledger; teardown replaces the estimate with actual elapsed cost. `would_exceed` checks are plain arithmetic, so provisioning is refused (not warned) if it would breach `LAMBDA_BUDGET_USD`. `bin/lambda` is stdlib-only Python.
 
 ## Tests
 
-The current architecture's tests live with the worked example:
+Worked example:
 
 ```bash
 cd papers/attention-is-all-you-need
 uv sync && uv run pytest tests/ -v
 ```
 
-32 unit tests across attention/positional/transformer/tokenize/wmt/eval. CI runs them + an `--overfit-one-batch` assertion (final loss must be < 0.05 with LS=0) on every push. The original harness's 137 tests are preserved at [`custom-harness/tests/`](custom-harness/tests/) but no longer run in CI.
+32 unit tests across attention, positional, transformer, tokenize, WMT, eval. CI runs them plus an `--overfit-one-batch` assertion (final loss < 0.05 with LS=0) on every push.
+
+Autonomous harness:
+
+```bash
+cd custom-harness
+uv run pytest
+```
+
+## History
+
+See [`MIGRATION_PLAN.md`](MIGRATION_PLAN.md) for the phase plan and the original-harness-to-toolkit migration.

@@ -7,11 +7,16 @@ import yaml
 
 from research_builder.config import Config
 from research_builder.models.spec import (
+    AcceptanceCriterion,
     Artifact,
+    Citation,
+    CritiqueVerdict,
     EventType,
     PhaseState,
     PhaseStatus,
     Revision,
+    SectionCritique,
+    SectionSpec,
     SpecMetadata,
     SpecState,
 )
@@ -101,33 +106,18 @@ class TestWorkspaceManager:
         assert config.phases_dir.exists()
         assert config.report_dir.exists()
 
-    def test_create_attempt(self, workspace):
-        attempt = workspace.create_attempt("data", 1)
+    def test_attempt_dir_creates_numbered_subdir(self, workspace, config):
+        attempt = workspace.attempt_dir("data", 1)
         assert attempt.exists()
-        assert (attempt / "src").exists()
-        assert (attempt / "outputs").exists()
-
-    def test_next_try_num_empty(self, workspace):
-        assert workspace.next_try_num("data") == 1
-
-    def test_next_try_num_increments(self, workspace):
-        workspace.create_attempt("data", 1)
-        assert workspace.next_try_num("data") == 2
-        workspace.create_attempt("data", 2)
-        assert workspace.next_try_num("data") == 3
-
-    def test_next_try_num_handles_gaps(self, workspace):
-        workspace.create_attempt("data", 1)
-        workspace.create_attempt("data", 5)
-        assert workspace.next_try_num("data") == 6
+        assert attempt == config.phases_dir / "data" / "attempts" / "1"
 
     def test_phase_dir(self, workspace, config):
         assert workspace.phase_dir("data") == config.phases_dir / "data"
 
     def test_paths(self, workspace, config):
         assert workspace.spec_md_path == config.spec_dir / "spec.md"
-        assert workspace.state_path == config.spec_dir / "state.yaml"
-        assert workspace.revision_log_path == config.spec_dir / "revision_log.yaml"
+        assert workspace.state_path == config.spec_dir / "state.json"
+        assert workspace.revision_log_path == config.spec_dir / "revision_log.json"
         assert workspace.report_path == config.report_dir / "reproduction_report.md"
 
 
@@ -145,7 +135,7 @@ class TestSpecStoreMd:
         assert spec_store.load_spec_md() == ""
 
 
-# --- SpecStore: state.yaml ---
+# --- SpecStore: state.json ---
 
 
 class TestSpecStoreState:
@@ -171,7 +161,7 @@ class TestSpecStoreState:
         assert loaded.phases[0].outputs[0].file_path == "phases/data/1/outputs/loader.pt"
 
 
-# --- SpecStore: revision_log.yaml ---
+# --- SpecStore: revision_log.json ---
 
 
 class TestSpecStoreRevisionLog:
@@ -221,7 +211,7 @@ class TestSpecStoreWorkflow:
         assert len(revisions) == 1
 
     def test_state_and_md_are_independent(self, spec_store):
-        """Updating state.yaml should not affect spec.md and vice versa."""
+        """Updating state.json should not affect spec.md and vice versa."""
         spec_store.save_spec_md(SAMPLE_SPEC_MD)
         state = _make_state()
         spec_store.save_state(state)
@@ -238,6 +228,65 @@ class TestSpecStoreWorkflow:
         spec_store.save_spec_md("# Updated spec")
         loaded_state = spec_store.load_state()
         assert loaded_state.get_phase("data").status == PhaseStatus.completed
+
+
+# --- SpecStore: per-section specs (new) ---
+
+
+def _make_section_spec(phase_id: str = "section_3_2"):
+    return SectionSpec(
+        phase_id=phase_id,
+        title="Multi-Head Attention",
+        goal="Implement scaled dot-product attention.",
+        spec_markdown="## Multi-Head Attention\n\nBody.",
+        acceptance_criteria=[
+            AcceptanceCriterion(
+                text="Shape (batch, seq, d_model)",
+                source=Citation(page=4, section="3.2"),
+            ),
+        ],
+        citations=[Citation(page=4, section="3.2", quote="h = 8 heads")],
+    )
+
+
+class TestSpecStoreSections:
+    def test_save_and_load_section_spec(self, spec_store, workspace):
+        spec = _make_section_spec()
+        spec_store.save_section_spec(spec)
+
+        # Both files exist.
+        assert (spec_store.sections_dir / "section_3_2.md").exists()
+        assert (spec_store.sections_dir / "section_3_2.json").exists()
+
+        loaded = spec_store.load_section_spec("section_3_2")
+        assert loaded is not None
+        assert loaded.phase_id == spec.phase_id
+        assert loaded.spec_markdown == spec.spec_markdown
+        assert loaded.acceptance_criteria[0].source.page == 4
+
+    def test_load_missing_section_returns_none(self, spec_store):
+        assert spec_store.load_section_spec("nonexistent") is None
+
+    def test_list_section_spec_ids(self, spec_store, workspace):
+        spec_store.save_section_spec(_make_section_spec("section_3_2"))
+        spec_store.save_section_spec(_make_section_spec("section_5_1"))
+        ids = spec_store.list_section_spec_ids()
+        assert ids == ["section_3_2", "section_5_1"]
+
+    def test_save_and_load_section_critique(self, spec_store, workspace):
+        critique = SectionCritique(
+            phase_id="section_3_2",
+            verdict=CritiqueVerdict.verified,
+            reasons=["all criteria cited"],
+        )
+        spec_store.save_section_critique(critique)
+        loaded = spec_store.load_section_critique("section_3_2")
+        assert loaded is not None
+        assert loaded.verdict == CritiqueVerdict.verified
+        assert loaded.reasons == ["all criteria cited"]
+
+    def test_workspace_creates_sections_dir(self, workspace, config):
+        assert (config.spec_dir / "sections").exists()
 
 
 # --- Config ---
@@ -258,6 +307,6 @@ class TestConfig:
 
     def test_defaults(self):
         cfg = Config()
-        assert cfg.model == "claude-opus-4-6"
+        assert cfg.model == "claude-opus-4-6[1m]"
         assert cfg.max_retries == 3
         assert cfg.max_debug_attempts == 10

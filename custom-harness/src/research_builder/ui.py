@@ -97,24 +97,29 @@ def prompt_end() -> None:
 
 def status_line(phase_id: str, kind: str, detail: str) -> None:
     """Overwrite the current terminal line with the latest agent activity."""
+    if kind not in ("tool", "thinking"):
+        return
+
+    # Truncate detail to fit terminal width — single pass, no recursion.
+    # The previous implementation recursed when ``plain_len > width`` but
+    # could fail to converge when ``width`` was tiny (subprocess COLUMNS=0
+    # or a phase_id longer than the budget), blowing the Python stack.
+    width = shutil.get_terminal_size().columns
+    if width <= 0:
+        # No usable terminal; skip the redraw entirely.
+        return
+
+    prefix_plain = f"  [{phase_id}] " + ("-> " if kind == "tool" else "")
+    budget = max(0, width - len(prefix_plain) - 3)  # 3 = "..." tail safety
+    if budget > 0 and len(detail) > budget:
+        detail = detail[: budget].rstrip() + "..."
+
     tag = click.style(f"[{phase_id}]", fg="magenta")
     if kind == "tool":
         icon = click.style("->", fg="cyan", bold=True)
         text = f"  {tag} {icon} {detail}"
-    elif kind == "thinking":
-        text = f"  {tag} {click.style(detail, dim=True)}"
     else:
-        return
-
-    # Truncate to terminal width so the line doesn't wrap
-    width = shutil.get_terminal_size().columns
-    plain_len = len(click.unstyle(text))
-    if plain_len > width:
-        # Over-truncate the detail, keeping ANSI codes intact is tricky
-        # so just cap the raw detail and rebuild
-        max_detail = max(10, width - 30)
-        detail = detail[:max_detail] + "..."
-        return status_line(phase_id, kind, detail)
+        text = f"  {tag} {click.style(detail, dim=True)}"
 
     sys.stderr.write(f"\r\033[K{text}")
     sys.stderr.flush()

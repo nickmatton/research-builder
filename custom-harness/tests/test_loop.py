@@ -105,11 +105,14 @@ def setup(tmp_path):
     return config, store, workspace
 
 
-def _build_loop(setup, state, sub_agent_results, acceptance_results=None):
-    """Build an ExecutionLoop with mocked sub-agent and acceptance review.
+def _build_loop(setup, state, sub_agent_results, acceptance_results=None, verify_results=None):
+    """Build an ExecutionLoop with mocked sub-agent, acceptance review, and section verifier.
 
     sub_agent_results: list of SubAgentResult, popped in order for each sub-agent dispatch.
     acceptance_results: list of (accepted, feedback), popped in order. Defaults to all accepted.
+    verify_results: list of (accepted, feedback), popped in order. Defaults to all accepted.
+        The section verifier now gates retries (acceptance_review is no longer called by
+        the loop), so set this when you want to drive a rejection-triggered retry.
     """
     config, store, workspace = setup
 
@@ -134,7 +137,24 @@ def _build_loop(setup, state, sub_agent_results, acceptance_results=None):
     async def mock_acceptance(phase_id, result, spec_mgr):
         return next(accept_iter)
 
-    return loop, mock_sub_agent_run, mock_acceptance
+    # Mock per-section 4-agent chain (refiner/researcher/verifier) so tests
+    # don't try to make real API calls. Each returns a minimal payload that
+    # mirrors the live shape.
+    async def mock_refine(phase_id, spec_mgr, paper_path):
+        return {"refined_spec_md": "", "summary": "", "research_questions": []}
+
+    async def mock_research(phase_id, questions, spec_mgr, paper_path):
+        return {"research_notes_md": "", "sources": [], "summary": ""}
+
+    if verify_results is None:
+        verify_results = [(True, None)] * len(sub_agent_results)
+    verify_iter = iter(verify_results)
+
+    async def mock_verify(phase_id, builder_result, spec_mgr, work_dir=None):
+        accepted, feedback = next(verify_iter)
+        return accepted, feedback, {"deterministic_checks": [], "llm_judge": None}
+
+    return loop, mock_sub_agent_run, mock_acceptance, mock_refine, mock_research, mock_verify
 
 
 # ---------------------------------------------------------------------------
@@ -147,11 +167,14 @@ class TestHappyPath:
     async def test_two_phases_succeed(self, setup):
         state = _make_two_phase_state()
         results = [_success_result("data"), _success_result("training")]
-        loop, mock_run, mock_accept = _build_loop(setup, state, results)
+        loop, mock_run, mock_accept, mock_refine, mock_research, mock_verify = _build_loop(setup, state, results)
 
         from research_builder.sub_agent.agent import SubAgent
         with patch.object(SubAgent, "run", mock_run), \
-             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept):
+             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept), \
+             patch.object(loop.orchestrator_agent, "refine_section", mock_refine), \
+             patch.object(loop.orchestrator_agent, "research_for_section", mock_research), \
+             patch.object(loop.orchestrator_agent, "verify_section", mock_verify):
             success = await loop.run()
 
         assert success is True
@@ -167,11 +190,14 @@ class TestHappyPath:
             _success_result("arch"),
             _success_result("training"),
         ]
-        loop, mock_run, mock_accept = _build_loop(setup, state, results)
+        loop, mock_run, mock_accept, mock_refine, mock_research, mock_verify = _build_loop(setup, state, results)
 
         from research_builder.sub_agent.agent import SubAgent
         with patch.object(SubAgent, "run", mock_run), \
-             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept):
+             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept), \
+             patch.object(loop.orchestrator_agent, "refine_section", mock_refine), \
+             patch.object(loop.orchestrator_agent, "research_for_section", mock_research), \
+             patch.object(loop.orchestrator_agent, "verify_section", mock_verify):
             success = await loop.run()
 
         assert success is True
@@ -189,7 +215,7 @@ class TestRetries:
             _success_result("data"),        # retry succeeds
             _success_result("training"),
         ]
-        loop, mock_run, mock_accept = _build_loop(
+        loop, mock_run, mock_accept, mock_refine, mock_research, mock_verify = _build_loop(
             setup, state, results,
             acceptance_results=[
                 (True, None),  # skip (failure doesn't get acceptance)
@@ -200,7 +226,10 @@ class TestRetries:
 
         from research_builder.sub_agent.agent import SubAgent
         with patch.object(SubAgent, "run", mock_run), \
-             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept):
+             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept), \
+             patch.object(loop.orchestrator_agent, "refine_section", mock_refine), \
+             patch.object(loop.orchestrator_agent, "research_for_section", mock_research), \
+             patch.object(loop.orchestrator_agent, "verify_section", mock_verify):
             success = await loop.run()
 
         assert success is True
@@ -215,11 +244,14 @@ class TestRetries:
             _failure_result("data"),
             _failure_result("data"),
         ]
-        loop, mock_run, mock_accept = _build_loop(setup, state, results)
+        loop, mock_run, mock_accept, mock_refine, mock_research, mock_verify = _build_loop(setup, state, results)
 
         from research_builder.sub_agent.agent import SubAgent
         with patch.object(SubAgent, "run", mock_run), \
-             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept):
+             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept), \
+             patch.object(loop.orchestrator_agent, "refine_section", mock_refine), \
+             patch.object(loop.orchestrator_agent, "research_for_section", mock_research), \
+             patch.object(loop.orchestrator_agent, "verify_section", mock_verify):
             success = await loop.run()
 
         assert success is False
@@ -237,14 +269,17 @@ class TestSpecIssue:
             _success_result("data"),                        # finally succeeds
             _success_result("training"),
         ]
-        loop, mock_run, mock_accept = _build_loop(
+        loop, mock_run, mock_accept, mock_refine, mock_research, mock_verify = _build_loop(
             setup, state, results,
             acceptance_results=[(True, None)] * 4,
         )
 
         from research_builder.sub_agent.agent import SubAgent
         with patch.object(SubAgent, "run", mock_run), \
-             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept):
+             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept), \
+             patch.object(loop.orchestrator_agent, "refine_section", mock_refine), \
+             patch.object(loop.orchestrator_agent, "research_for_section", mock_research), \
+             patch.object(loop.orchestrator_agent, "verify_section", mock_verify):
             success = await loop.run()
 
         assert success is True
@@ -254,17 +289,17 @@ class TestSpecIssue:
 class TestAcceptanceRejection:
     @pytest.mark.asyncio
     async def test_rejection_triggers_retry(self, setup):
-        """Acceptance rejection sends phase back for retry."""
+        """Section-verifier rejection sends phase back for retry."""
         state = _make_two_phase_state()
         results = [
             _success_result("data"),        # sub-agent says success...
             _success_result("data"),        # retry succeeds
             _success_result("training"),
         ]
-        loop, mock_run, mock_accept = _build_loop(
+        loop, mock_run, mock_accept, mock_refine, mock_research, mock_verify = _build_loop(
             setup, state, results,
-            acceptance_results=[
-                (False, "Missing validation"),  # ...but acceptance rejects
+            verify_results=[
+                (False, "Missing validation"),  # ...but verifier rejects
                 (True, None),                   # retry accepted
                 (True, None),                   # training accepted
             ],
@@ -272,7 +307,10 @@ class TestAcceptanceRejection:
 
         from research_builder.sub_agent.agent import SubAgent
         with patch.object(SubAgent, "run", mock_run), \
-             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept):
+             patch.object(loop.orchestrator_agent, "acceptance_review", mock_accept), \
+             patch.object(loop.orchestrator_agent, "refine_section", mock_refine), \
+             patch.object(loop.orchestrator_agent, "research_for_section", mock_research), \
+             patch.object(loop.orchestrator_agent, "verify_section", mock_verify):
             success = await loop.run()
 
         assert success is True

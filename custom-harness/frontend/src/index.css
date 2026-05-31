@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+/* ─── Design tokens ────────────────────────────────────────────────────
+   Dark, neutral surfaces with one accent. We're going for a Linear /
+   Vercel feel: tight typography, generous spacing, no chrome.
+*/
+@theme {
+  --color-bg: #0a0a0a;
+  --color-surface: #111111;
+  --color-surface-2: #161616;
+  --color-border: #1f1f1f;
+  --color-border-strong: #2a2a2a;
+  --color-fg: #fafafa;
+  --color-fg-muted: #a3a3a3;
+  --color-fg-dim: #6b7280;
+  --color-accent: #6366f1;
+  --color-ok: #22c55e;
+  --color-warn: #eab308;
+  --color-fail: #ef4444;
+  --color-run: #38bdf8;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Monaco, "Cascadia Mono", monospace;
+}
+
+html, body, #root { height: 100%; }
+html { color-scheme: dark; }
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  font-feature-settings: "cv11", "ss01";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar polish (WebKit only — gracefully ignored elsewhere). */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border-strong); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+
+/* Selection */
+::selection { background: color-mix(in oklab, var(--color-accent) 35%, transparent); }
+
+/* ─── Syntax highlighting (highlight.js classes) ───────────────────────
+   Custom dark theme tuned to the design tokens above. Avoids importing
+   a stock hljs CSS so the colors stay coherent with the rest of the UI. */
+.hljs              { color: var(--color-fg); background: transparent; }
+.hljs-comment,
+.hljs-quote        { color: var(--color-fg-dim); font-style: italic; }
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-name         { color: #a78bfa; }                   /* violet  */
+.hljs-string,
+.hljs-attr,
+.hljs-symbol       { color: #6ee7b7; }                   /* green   */
+.hljs-number,
+.hljs-literal      { color: #fbbf24; }                   /* amber   */
+.hljs-title,
+.hljs-section,
+.hljs-function .hljs-title,
+.hljs-class .hljs-title { color: #60a5fa; }              /* blue    */
+.hljs-type,
+.hljs-meta,
+.hljs-meta .hljs-keyword { color: #93c5fd; }
+.hljs-variable,
+.hljs-template-variable  { color: #f9a8d4; }             /* pink    */
+.hljs-tag,
+.hljs-selector-id,
+.hljs-selector-class,
+.hljs-regexp,
+.hljs-link         { color: #f472b6; }
+.hljs-deletion     { color: var(--color-fail); }
+.hljs-addition     { color: var(--color-ok); }
+.hljs-emphasis     { font-style: italic; }
+.hljs-strong       { font-weight: 600; }
+
+/* ─── Rendered markdown (react-markdown output) ────────────────────────
+   Used wherever spec/report markdown is rendered (.prose-spec wrapper).
+   Tuned for dense, readable docs on the dark surfaces above; font-size is
+   set by the wrapping element so the same rules work at xs and sm. */
+.prose-spec { line-height: 1.6; }
+.prose-spec > :first-child { margin-top: 0; }
+.prose-spec > :last-child { margin-bottom: 0; }
+.prose-spec h1, .prose-spec h2, .prose-spec h3,
+.prose-spec h4, .prose-spec h5, .prose-spec h6 {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.2em 0 0.5em;
+  color: var(--color-fg);
+}
+.prose-spec h1 { font-size: 1.5em; }
+.prose-spec h2 { font-size: 1.25em; padding-bottom: 0.2em; border-bottom: 1px solid var(--color-border); }
+.prose-spec h3 { font-size: 1.1em; }
+.prose-spec p, .prose-spec ul, .prose-spec ol, .prose-spec blockquote, .prose-spec table {
+  margin: 0.6em 0;
+}
+.prose-spec ul, .prose-spec ol { padding-left: 1.4em; }
+.prose-spec ul { list-style: disc; }
+.prose-spec ol { list-style: decimal; }
+.prose-spec li { margin: 0.2em 0; }
+.prose-spec li > ul, .prose-spec li > ol { margin: 0.2em 0; }
+.prose-spec a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
+.prose-spec strong { font-weight: 600; color: var(--color-fg); }
+.prose-spec code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 0.05em 0.35em;
+}
+.prose-spec pre {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.8em 1em;
+  overflow-x: auto;
+  margin: 0.7em 0;
+}
+.prose-spec pre code { background: none; border: none; padding: 0; font-size: 0.9em; }
+.prose-spec blockquote {
+  border-left: 3px solid var(--color-border-strong);
+  padding-left: 0.9em;
+  color: var(--color-fg-muted);
+}
+.prose-spec hr { border: none; border-top: 1px solid var(--color-border); margin: 1.2em 0; }
+.prose-spec table { border-collapse: collapse; display: block; overflow-x: auto; }
+.prose-spec th, .prose-spec td {
+  border: 1px solid var(--color-border);
+  padding: 0.35em 0.7em;
+  text-align: left;
+}
+.prose-spec th { background: var(--color-surface-2); font-weight: 600; }
+
+/* PDF.js text layer (required for selection) */
+.textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 0.25;
+  line-height: 1;
+  user-select: text;
+}
+.textLayer > span {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}

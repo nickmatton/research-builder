@@ -75,14 +75,19 @@ class CommandListener:
 
     async def _dispatch(self, inbox, cmd: dict) -> None:
         ctype = cmd.get("type")
-        if ctype != "chat_message":
-            logger.info("command_listener: ignoring unknown type=%r", ctype)
+        if ctype == "chat_message":
+            agent_id = cmd.get("agent_id")
+            text = cmd.get("text")
+            if not agent_id or not text:
+                return
+            await inbox.deliver(agent_id, text)
             return
-        agent_id = cmd.get("agent_id")
-        text = cmd.get("text")
-        if not agent_id or not text:
+
+        if ctype in inbox.INTERVENTION_TYPES:
+            inbox.post_intervention(cmd)
             return
-        await inbox.deliver(agent_id, text)
+
+        logger.info("command_listener: ignoring unknown type=%r", ctype)
 
 
 def _inode(path: Path) -> int:

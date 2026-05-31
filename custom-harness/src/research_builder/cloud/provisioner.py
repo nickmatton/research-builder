@@ -27,9 +27,11 @@ import json
 import logging
 import os
 import re
+import threading
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -39,6 +41,7 @@ from claude_agent_sdk import (
 )
 
 from ..config import Config
+from ..events.emitter import EventEmitter
 from ..models.context import SubSpec
 from .budget import FALLBACK_HOURLY_RATE_USD, BudgetLedger
 from .lambda_cloud import (
@@ -100,6 +103,7 @@ class ComputeHandle:
             await self._client.terminate_instance(self.machine.id)
         finally:
             self._provisioner._ledger.release(self._ledger_entry_id)
+            self._provisioner._on_terminated(self)
             await self._client.aclose()
 
 
@@ -145,6 +149,8 @@ class CloudProvisioner:
         api_key: str,
         ledger: BudgetLedger,
         approval_callback: ApprovalCallback,
+        emitter: EventEmitter | None = None,
+        persistence_path: Path | None = None,
     ) -> None:
         self.config = config
         self._api_key = api_key
@@ -153,6 +159,21 @@ class CloudProvisioner:
         self._decision_cache: dict[str, CloudDecision] = {}
         # Memoize Lambda's pricing table — small, never changes mid-run.
         self._price_cache: dict[str, float | None] = {}
+        # Lifecycle event sink + on-disk snapshot. Both optional — the
+        # provisioner runs headless without either, but the webapp's
+        # Compute tab needs the snapshot to list past instances after a
+        # restart and the emitter to stream live state.
+        self._emitter = emitter
+        self._persistence_path = (
+            Path(persistence_path) if persistence_path is not None else None
+        )
+        # Single-writer guard for the JSON snapshot. The provisioner is
+        # invoked from the asyncio loop in one process, but teardown can
+        # run during shutdown signal handling — keep it sync-safe.
+        self._persist_lock = threading.Lock()
+        # Loaded once on construction so we don't clobber records from
+        # a prior process (resumed runs).
+        self._snapshot: dict[str, Any] = self._load_snapshot()
 
     @property
     def ledger(self) -> BudgetLedger:
@@ -219,7 +240,11 @@ class CloudProvisioner:
             "You are a routing classifier for a research-paper reproduction harness.\n\n"
             "Given the spec for one phase, decide whether executing it would benefit "
             "from a cloud GPU machine. GPU is warranted for:\n"
-            "  - model training / fine-tuning of any non-trivial neural network\n"
+            "  - ANY model training, fine-tuning, gradient-based optimization, or "
+            "fitting of learned parameters — regardless of model size. This includes "
+            "small MLPs, linear models with SGD, and short smoke runs. The harness "
+            "must never run training locally; when in doubt about a training phase, "
+            "choose GPU.\n"
             "  - GPU-accelerated inference / eval whenever the model being evaluated "
             "is large enough that CPU inference would be impractically slow "
             "(transformers, CNNs, deep nets with >10M params, any LLM, beam search "
@@ -227,9 +252,11 @@ class CloudProvisioner:
             "says 'compute metric X', cross-reference the architecture section of "
             "the full spec to judge model size\n"
             "  - any phase whose runtime would be hours on CPU but minutes on GPU\n\n"
-            "GPU is NOT warranted for: data download, small CPU preprocessing, "
-            "spec authoring, report writing, or eval/inference of trivial models "
-            "(simple regression, small MLPs, lookup tables).\n\n"
+            "GPU is NOT warranted for: data download, CPU preprocessing, spec "
+            "authoring, report writing, or INFERENCE/eval of trivial models "
+            "(simple regression, small MLPs, lookup tables). The trivial-model "
+            "carve-out applies ONLY to inference — training of a trivial model "
+            "still gets a GPU.\n\n"
             "Respond with a single JSON object on one line, no prose, no code fences:\n"
             '{"needs_gpu": <bool>, "instance_type": "<Lambda Cloud instance type, e.g. '
             'gpu_1x_a10, gpu_1x_a100, gpu_8x_a100, gpu_1x_h100>", '
@@ -466,11 +493,24 @@ class CloudProvisioner:
             self._ledger.release(new_entry_id)
             raise
 
+        # Snapshot the old instance ID before we mutate the handle so the
+        # snapshot record can be marked terminated.
+        old_instance_id = handle.machine.id
+
         # Mutate the existing handle so the orchestrator's finally block tears down the new box.
         handle.machine = new_handle.machine
         handle._client = new_handle._client
         handle._ledger_entry_id = new_entry_id
         handle._terminated = False
+
+        # _launch already wrote the new instance as a fresh provisioned
+        # record. Convert that into an upgrade record so the snapshot's
+        # history tracks the swap rather than showing two unrelated boxes.
+        self._on_upgraded(
+            old_instance_id, handle,
+            phase_id=current_entry.phase_id,
+            reason=reason or "sub-agent upgrade",
+        )
 
         msg = (
             f"Upgraded to {target_instance_type} (~${target_rate:.2f}/hr × {target_hours:.1f}hrs "
@@ -523,16 +563,171 @@ class CloudProvisioner:
         helper.write_text(_REMOTE_RUN_SH)
         helper.chmod(0o755)
 
-        return ComputeHandle(
+        handle = ComputeHandle(
             machine=instance,
             work_dir=work_dir,
             _client=client,
             _provisioner=self,
             _ledger_entry_id=ledger_entry_id,
         )
+        self._on_provisioned(handle, phase_id=phase_id)
+        return handle
 
     def _client_for(self, handle: ComputeHandle) -> LambdaClient:
         return handle._client
+
+    # ---- snapshot + event emission --------------------------------------
+
+    def _load_snapshot(self) -> dict[str, Any]:
+        if self._persistence_path is None:
+            return {"instances": {}}
+        try:
+            raw = self._persistence_path.read_text()
+        except FileNotFoundError:
+            return {"instances": {}}
+        except OSError as e:
+            logger.warning("CloudProvisioner: could not read %s: %s", self._persistence_path, e)
+            return {"instances": {}}
+        try:
+            data = json.loads(raw or "{}")
+        except json.JSONDecodeError as e:
+            logger.warning("CloudProvisioner: corrupt snapshot at %s: %s", self._persistence_path, e)
+            return {"instances": {}}
+        if "instances" not in data or not isinstance(data["instances"], dict):
+            data["instances"] = {}
+        return data
+
+    def _persist_snapshot(self) -> None:
+        if self._persistence_path is None:
+            return
+        path = self._persistence_path
+        with self._persist_lock:
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                payload = {
+                    "instances": self._snapshot.get("instances", {}),
+                    "budget": {
+                        "cap_usd": self._ledger.cap_usd,
+                        "projected_total_usd": self._ledger.projected_total(),
+                    },
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                }
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                tmp.write_text(json.dumps(payload, indent=2, default=str))
+                tmp.replace(path)
+            except OSError as e:
+                logger.warning("CloudProvisioner: could not write %s: %s", path, e)
+
+    def _instance_record(
+        self,
+        handle: ComputeHandle,
+        *,
+        phase_id: str,
+        status: str,
+        provisioned_at: str | None = None,
+    ) -> dict[str, Any]:
+        entry = self._ledger._entries.get(handle._ledger_entry_id)
+        rate = entry.hourly_rate_usd if entry else 0.0
+        est_hours = entry.estimated_hours if entry else 0.0
+        return {
+            "instance_id": handle.machine.id,
+            "phase_id": phase_id,
+            "instance_type": handle.machine.instance_type,
+            "public_ip": handle.machine.public_ip,
+            "ssh_user": handle.machine.ssh_user,
+            "ssh_key_path": str(handle.machine.ssh_key_path),
+            "region": DEFAULT_REGION,
+            "hourly_rate_usd": rate,
+            "estimated_hours": est_hours,
+            "estimated_cost_usd": rate * est_hours,
+            "actual_hours": None,
+            "actual_cost_usd": None,
+            "status": status,
+            "provisioned_at": provisioned_at or datetime.now().isoformat(timespec="seconds"),
+            "terminated_at": None,
+            "ledger_entry_id": handle._ledger_entry_id,
+            "work_dir": str(handle.work_dir),
+            "upgrades": [],
+        }
+
+    def _on_provisioned(self, handle: ComputeHandle, *, phase_id: str) -> None:
+        record = self._instance_record(handle, phase_id=phase_id, status="active")
+        self._snapshot.setdefault("instances", {})[handle.machine.id] = record
+        self._persist_snapshot()
+        if self._emitter is not None:
+            self._emitter.emit(
+                "compute_provisioned",
+                agent_id=f"phase:{phase_id}",
+                parent_id="orchestrator",
+                instance_id=record["instance_id"],
+                instance_type=record["instance_type"],
+                public_ip=record["public_ip"],
+                hourly_rate_usd=record["hourly_rate_usd"],
+                estimated_hours=record["estimated_hours"],
+                estimated_cost_usd=record["estimated_cost_usd"],
+                work_dir=record["work_dir"],
+            )
+
+    def _on_terminated(self, handle: ComputeHandle) -> None:
+        instances = self._snapshot.setdefault("instances", {})
+        record = instances.get(handle.machine.id)
+        if record is None:
+            return
+        entry = self._ledger._entries.get(handle._ledger_entry_id)
+        actual_hours = entry.actual_hours if entry else None
+        actual_cost = entry.actual_cost() if entry else None
+        record["status"] = "terminated"
+        record["terminated_at"] = datetime.now().isoformat(timespec="seconds")
+        if actual_hours is not None:
+            record["actual_hours"] = actual_hours
+        if actual_cost is not None:
+            record["actual_cost_usd"] = actual_cost
+        self._persist_snapshot()
+        if self._emitter is not None:
+            self._emitter.emit(
+                "compute_terminated",
+                agent_id=f"phase:{record.get('phase_id', 'unknown')}",
+                parent_id="orchestrator",
+                instance_id=record["instance_id"],
+                actual_hours=record.get("actual_hours"),
+                actual_cost_usd=record.get("actual_cost_usd"),
+            )
+
+    def _on_upgraded(
+        self,
+        old_instance_id: str,
+        new_handle: ComputeHandle,
+        *,
+        phase_id: str,
+        reason: str,
+    ) -> None:
+        instances = self._snapshot.setdefault("instances", {})
+        old = instances.get(old_instance_id)
+        if old is not None:
+            old["status"] = "terminated"
+            old["terminated_at"] = datetime.now().isoformat(timespec="seconds")
+        new_record = self._instance_record(
+            new_handle, phase_id=phase_id, status="active",
+        )
+        new_record["upgrades"].append({
+            "from_instance_id": old_instance_id,
+            "from_instance_type": old["instance_type"] if old else None,
+            "reason": reason,
+            "ts": new_record["provisioned_at"],
+        })
+        instances[new_handle.machine.id] = new_record
+        self._persist_snapshot()
+        if self._emitter is not None:
+            self._emitter.emit(
+                "compute_upgraded",
+                agent_id=f"phase:{phase_id}",
+                parent_id="orchestrator",
+                from_instance_id=old_instance_id,
+                to_instance_id=new_handle.machine.id,
+                instance_type=new_record["instance_type"],
+                public_ip=new_record["public_ip"],
+                reason=reason,
+            )
 
 
 @dataclass

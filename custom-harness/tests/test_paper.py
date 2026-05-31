@@ -16,13 +16,20 @@ class TestExtractPages:
         assert "Abstract" in text
 
     def test_page_range(self):
-        text = extract_pages(FIXTURE_PDF, 2, 3)
+        text = extract_pages(FIXTURE_PDF, 2, 4)
         assert "Methods" in text
+        assert "Compute Setup" in text
         assert "Results" in text
 
     def test_last_page(self):
-        text = extract_pages(FIXTURE_PDF, 3)
+        text = extract_pages(FIXTURE_PDF, 4)
         assert "95.2%" in text
+
+    def test_compute_setup_page(self):
+        text = extract_pages(FIXTURE_PDF, 3)
+        assert "Compute Setup" in text
+        assert "torch.cuda.is_available()" in text
+        assert "torch.cuda.empty_cache()" in text
 
     def test_page_markers(self):
         text = extract_pages(FIXTURE_PDF, 1, 2)
@@ -44,7 +51,7 @@ class TestExtractPages:
 
 class TestGetPageCount:
     def test_count(self):
-        assert get_page_count(FIXTURE_PDF) == 3
+        assert get_page_count(FIXTURE_PDF) == 4
 
 
 class TestExtractFullText:
@@ -52,9 +59,10 @@ class TestExtractFullText:
         text = extract_full_text(FIXTURE_PDF)
         assert "Abstract" in text
         assert "Methods" in text
+        assert "Compute Setup" in text
         assert "Results" in text
         assert "--- Page 1 ---" in text
-        assert "--- Page 3 ---" in text
+        assert "--- Page 4 ---" in text
 
     def test_file_not_found(self):
         with pytest.raises(FileNotFoundError):

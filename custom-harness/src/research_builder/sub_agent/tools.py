@@ -1,9 +1,16 @@
-"""Custom MCP tools for sub-agents.
+"""In-process custom tools for sub-agents.
 
-Sub-agents get the standard built-in tools (Read, Write, Edit, Bash, Glob, Grep)
-from the Agent SDK — including native PDF reading via Read with the ``pages``
-parameter, which fully replaces the old ``read_paper_section`` and
-``search_paper`` MCP tools.
+Defined as plain async Python functions and registered with the Claude Agent
+SDK via ``create_sdk_mcp_server``. The "MCP" in that helper is just the SDK's
+plugin-registration format — nothing crosses a network or process boundary,
+and tool calls dispatch as direct coroutine invocations in our process. The
+``mcp__<server>__<tool>`` prefix in the fully-qualified tool name is the
+SDK's tool-routing convention; we don't control that part.
+
+Sub-agents also get the standard built-in tools (Read, Write, Edit, Bash,
+Glob, Grep) from the Agent SDK — including native PDF reading via Read with
+the ``pages`` parameter, which fully replaces an earlier custom paper-reading
+tool.
 
 Custom tools provided here:
 
@@ -50,7 +57,9 @@ def create_phase_tools(
         spec_dir: (unused now; kept for backward-compat with the loop's call site)
 
     Returns:
-        An MCP server config to pass to ClaudeAgentOptions.mcp_servers.
+        An SDK tool-server handle to plug into
+        ``ClaudeAgentOptions(mcp_servers={"phase": handle})``. Tool calls
+        dispatch as direct coroutines in this process — no IPC, no network.
     """
 
     @tool(
@@ -210,7 +219,9 @@ def create_phase_tools(
         tools_list.append(request_compute)
 
     return create_sdk_mcp_server(
-        name="phase_tools",
+        # Short server label; surfaces as the middle segment of the SDK's
+        # ``mcp__<server>__<tool>`` routing prefix.
+        name="phase",
         version="1.0.0",
         tools=tools_list,
     )
@@ -218,13 +229,15 @@ def create_phase_tools(
 
 # Built-in tools that sub-agents get from the Agent SDK. Read supports PDFs
 # natively (with the ``pages`` parameter), so it doubles as the paper-reading
-# tool — no custom MCP tool needed for that anymore.
-BUILTIN_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
+# tool — no custom tool needed for that.
+BUILTIN_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "Monitor", "KillShell"]
 
-# Custom tool names (prefixed with MCP server name). request_compute is added
-# dynamically when a remote GPU is provisioned.
+# Fully-qualified custom tool names. The ``mcp__<server>__<tool>`` prefix is
+# the SDK's tool-routing convention; the server segment matches the
+# ``name=`` above. ``request_compute`` is added dynamically when a remote
+# GPU is provisioned.
 CUSTOM_TOOL_NAMES = [
-    "mcp__phase_tools__lookup_citation",
-    "mcp__phase_tools__report_result",
+    "mcp__phase__lookup_citation",
+    "mcp__phase__report_result",
 ]
-COMPUTE_TOOL_NAME = "mcp__phase_tools__request_compute"
+COMPUTE_TOOL_NAME = "mcp__phase__request_compute"

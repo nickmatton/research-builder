@@ -1,49 +1,52 @@
-# Example Run: Test Paper
+# Example run: test paper
 
-This directory contains the complete output of a successful end-to-end run of the research-builder pipeline against a simple 3-page test paper (`tests/fixtures/test_paper.pdf`).
+Snapshot of a successful end-to-end harness run against the bundled 4-page test paper at `custom-harness/paper/test_paper.pdf`.
+
+## Reproduce locally
+
+```bash
+cd custom-harness
+uv sync
+uv run research-builder --test
+```
+
+`--test` auto-selects the bundled paper, writes to `/tmp/rb-test`, and implies `--auto --dev --wipe`.
 
 ## Paper
 
-The test paper describes a study of "widget performance" — a minimal paper with:
-- A 3-layer neural network trained with AdamW (lr=0.001, batch_size=32)
+A minimal study of "widget performance":
+
+- 3-layer neural network trained with AdamW (lr=0.001, batch_size=32)
 - 100 epochs of training
 - Reported accuracy: 95.2%
 
-## Results
+## Result
 
-The pipeline reproduced the paper's results, achieving **95.5% test accuracy** (within 0.3% of the reported 95.2%).
+Pipeline reached **95.5% test accuracy** (within 0.3% of the reported 95.2%).
 
-**Run stats:** ~25 minutes, ~$1.15 in Claude tokens, 5 phases executed sequentially.
+Run stats: ~25 minutes, ~$1.15 in Claude tokens, 5 phases sequential.
 
-## Directory Structure
+## Layout
 
 ```
 canonical_spec/
-├── spec.md              # LLM-authored canonical interpretation of the paper
-├── state.yaml           # Machine-readable phase state and dependency graph
-└── revision_log.yaml    # Append-only event log
+  spec.md              LLM-authored canonical interpretation
+  state.yaml           machine-readable phase state and dependency graph
+  revision_log.yaml    append-only event log
 
 phases/
-├── data/1/
-│   ├── src/             # Data generation code + tests (10/10 passing)
-│   └── outputs/         # Synthetic dataset (train + test splits)
-├── architecture/1/
-│   ├── src/             # MLP model code + tests
-│   └── outputs/         # Model class file
-├── training/1/
-│   ├── src/             # Training loop + tests
-│   └── outputs/         # Training log (100 epochs)
-├── eval/1/
-│   ├── src/             # Evaluation script + tests
-│   └── outputs/         # Metrics JSON (95.5% accuracy)
-└── results/1/
-    ├── src/             # Report generation + tests
-    └── outputs/         # Reproduction report with training curves
+  data/1/              synthetic dataset generation (10/10 tests passing)
+  architecture/1/      MLP model code + tests
+  training/1/          training loop + tests (100-epoch log)
+  eval/1/              eval script + tests (metrics JSON)
+  results/1/           report generation + tests
 ```
 
-## Key Files
+## Key files
 
-- **[Reproduction Report](phases/results/1/outputs/reproduction_report.md)** — The final output with training curves, comparison tables, and discrepancy analysis
-- **[Canonical Spec](canonical_spec/spec.md)** — How the LLM interpreted the paper
-- **[Model Code](phases/architecture/1/src/model.py)** — The generated model architecture
-- **[Training Script](phases/training/1/src/train.py)** — The generated training loop
+- [`phases/results/1/outputs/reproduction_report.md`](phases/results/1/outputs/reproduction_report.md): final report with training curves, comparison tables, discrepancy analysis
+- [`canonical_spec/spec.md`](canonical_spec/spec.md): LLM's interpretation of the paper
+- [`phases/architecture/1/src/model.py`](phases/architecture/1/src/model.py): generated model architecture
+- [`phases/training/1/src/train.py`](phases/training/1/src/train.py): generated training loop
+
+Note: this snapshot predates the `compute_setup` phase that newer runs include.

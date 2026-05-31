@@ -1,7 +1,7 @@
 """Data models for the claims ledger — structured numerical claims from the paper.
 
 The claims ledger is extracted during spec creation and stored in
-``canonical_spec/claims.yaml``. Each phase's results are verified against
+``canonical_spec/claims.json``. Each phase's results are verified against
 the relevant claims during acceptance review.
 """
 

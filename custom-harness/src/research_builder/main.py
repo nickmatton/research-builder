@@ -116,16 +116,18 @@ def _copy_report(workspace, spec_manager) -> bool:
 
 
 async def run_pipeline(config: Config, resume: bool = False) -> bool:
-    """Execute the full paper reproduction pipeline."""
+    """Execute the full paper reproduction pipeline.
+
+    The pipeline is **model-orchestrated**: this function sets up workspace +
+    services + the execution-loop scaffolding, then hands off to a single
+    long-running ``OrchestratorAgent.run_as_orchestrator()`` call. The model
+    decides what to do next (write skeleton, author specs, run phases, ask
+    user for approval) via MCP tools defined in ``orchestrator/runtime_tools.py``.
+    """
     from .commands import CommandListener, get_inbox
-    from .console import InteractiveConsole
-    from .interaction import (
-        UserAction,
-        prompt_after_phase,
-        prompt_after_spec,
-    )
     from .orchestrator.agent import OrchestratorAgent
     from .orchestrator.loop import ExecutionLoop
+    from .orchestrator.runtime_tools import OrchestratorRuntime, deliver_user_reply
     from .orchestrator.spec_manager import SpecManager
     from .storage.spec_store import SpecStore
     from .storage.workspace import WorkspaceManager
@@ -142,43 +144,23 @@ async def run_pipeline(config: Config, resume: bool = False) -> bool:
     store = SpecStore(config.spec_dir)
     orchestrator_agent = OrchestratorAgent(config)
 
-    # Step 1: Create canonical spec from paper
     paper_path = config.paper_path
     if not paper_path.exists():
         logger.error("Paper not found: %s", paper_path)
         ui.failure(f"Paper not found at {paper_path}")
         return False
 
+    # The execution loop instance is reused by the start_phase tool — it owns
+    # per-phase failure handling, retries, sub-agent dispatch, and event
+    # emission. The orchestrator only schedules; the loop executes.
+    spec_manager: SpecManager | None = None
     if resume and store.state_path.exists():
-        ui.step(f"Resuming existing run from {store.state_path}")
-        spec_manager = SpecManager(store, store.load_state())
-        ui.success(f"Resumed: {len(spec_manager.state.phases)} phases loaded")
-    else:
-        ui.step(f"Ingesting paper: {paper_path}")
-        spec_manager = await orchestrator_agent.create_spec(paper_path, store)
-        ui.success(f"Spec created: {len(spec_manager.state.phases)} phases")
-    for phase in spec_manager.state.phases:
-        deps = spec_manager.dep_graph.get_dependencies(phase.phase_id)
-        dep_str = f" (depends on: {', '.join(deps)})" if deps else ""
-        ui.info(f"  - {phase.phase_id}: {phase.title}{dep_str}")
+        pass  # spec_manager was loaded above
+    # Otherwise spec_manager stays None — the orchestrator's write_skeleton
+    # tool will populate it on its first turn.
 
-    # Checkpoint: review spec
-    if config.interactive:
-        action = prompt_after_spec(workspace.spec_md_path)
-        if action == UserAction.ABORT:
-            ui.warning("Aborted by user.")
-            return False
-
-    # Step 2: Build phase callback for interactive mode
-    async def on_phase_complete(phase_id: str, result):
-        """Called after each phase. Returns UserAction."""
-        if not config.interactive:
-            return UserAction.CONTINUE
-        return prompt_after_phase(phase_id, result)
-
-    # Step 3: Run execution loop
-    ui.header("Starting execution loop")
-    console = InteractiveConsole(workspace.spec_md_path, spec_manager, config) if config.interactive else None
+    ui.header("Starting orchestrator")
+    console = None
 
     # Optional cloud provisioner: only enabled when LAMBDA_API_KEY is set.
     # Without it, the loop runs phases entirely locally as before.
@@ -222,42 +204,68 @@ async def run_pipeline(config: Config, resume: bool = False) -> bool:
 
             return await asyncio.to_thread(_ask)
 
+        from .events.emitter import get_emitter as _get_emitter
         cloud_provisioner = CloudProvisioner(
             config, lambda_key,
             ledger=ledger,
             approval_callback=_gpu_approval_callback,
+            emitter=_get_emitter(),
+            persistence_path=log_dir / "compute_instances.json",
         )
         ui.info(
             f"Lambda Cloud provisioner enabled (LAMBDA_API_KEY set, "
             f"GPU budget cap ${config.gpu_budget_usd:.2f})"
         )
 
+    # ExecutionLoop is constructed here but its top-level run() is NOT called.
+    # Instead, the orchestrator's start_phase tool drives _execute_phase one
+    # phase at a time. Construction still wires the failure handler, cost
+    # tracking, sub-agent dispatch, and event emission — all of which fire
+    # from inside each start_phase invocation.
     loop = ExecutionLoop(
         config=config,
         spec_manager=spec_manager,
         workspace=workspace,
         orchestrator_agent=orchestrator_agent,
-        on_phase_complete=on_phase_complete,
         console=console,
         cloud_provisioner=cloud_provisioner,
     )
 
-    # Wire the inbound chat command channel: listener tails commands.jsonl,
-    # delivers to inbox; orchestrator-targeted messages call OrchestratorAgent.chat().
+    # Build the runtime shared by all orchestrator tools.
+    runtime = OrchestratorRuntime(
+        config=config,
+        paper_path=paper_path,
+        workspace=workspace,
+        store=store,
+        orchestrator_agent=orchestrator_agent,
+        execution_loop=loop,
+        spec_manager=spec_manager,
+    )
+
+    # Wire chat input into the runtime's approval queue. Every inbound chat
+    # message is delivered to whichever request_user_approval is currently
+    # awaiting (or queued for the next one). The model interprets the text —
+    # there's no separate classifier; chat IS the orchestrator's input
+    # channel.
     inbox = get_inbox()
+
     async def _orchestrator_chat_handler(text: str) -> None:
-        await orchestrator_agent.chat(text, spec_manager=spec_manager)
+        deliver_user_reply(runtime, text)
+
     inbox.register_orchestrator_handler(_orchestrator_chat_handler)
 
-    import os as _os
-    commands_path_str = _os.environ.get("RESEARCH_BUILDER_COMMAND_LOG")
+    commands_path_str = os.environ.get("RESEARCH_BUILDER_COMMAND_LOG")
     listener_task = None
     if commands_path_str:
         listener = CommandListener(Path(commands_path_str))
         listener_task = asyncio.create_task(listener.run())
 
+    # Hand off to the model. Returns when the orchestrator calls
+    # pipeline_complete or pipeline_failed.
     try:
-        success = await loop.run()
+        success, final_message = await orchestrator_agent.run_as_orchestrator(runtime)
+        if final_message:
+            logger.info("Orchestrator finished: %s", final_message)
     finally:
         if listener_task is not None:
             listener_task.cancel()
@@ -266,10 +274,32 @@ async def run_pipeline(config: Config, resume: bool = False) -> bool:
             except (asyncio.CancelledError, Exception):
                 pass
 
-    # Log final status for each phase
+    # The orchestrator may have populated spec_manager via its write_skeleton
+    # tool; pull the latest into the local handle so the summary code below
+    # works.
+    spec_manager = runtime.spec_manager or spec_manager
+    if spec_manager is None:
+        ui.failure("Run ended without a spec_manager — nothing to summarize.")
+        return success
+
+    # Log final status for each phase. The [build]/[exp] tag distinguishes
+    # build-the-code phases from experiment-runs-the-paper-claim phases —
+    # otherwise it's not obvious from "section_4_*" vs "section_5_1_*" alone.
     logger.info("=== Run Summary ===")
     for phase in spec_manager.state.phases:
-        logger.info("  %s: %s", phase.phase_id, phase.status.value)
+        tag = "[exp]  " if phase.kind.value == "experiment" else "[build]"
+        logger.info("  %s %s: %s", tag, phase.phase_id, phase.status.value)
+
+    # Aggregated error summary — scans run.log for every WARNING/ERROR
+    # this run produced, groups them, writes a single markdown file to
+    # notes/run_errors.md. Best-effort; failures here never block.
+    try:
+        from .storage.run_summary import write_run_summary
+        summary_path = workspace.config.notes_dir / "run_errors.md"
+        if write_run_summary(log_dir / "run.log", summary_path):
+            ui.path_line("Run errors", summary_path)
+    except Exception:
+        logger.exception("Failed to write run error summary")
 
     if success:
         report_copied = _copy_report(workspace, spec_manager)
@@ -308,12 +338,12 @@ async def run_pipeline(config: Config, resume: bool = False) -> bool:
     "--output", "-o",
     type=click.Path(path_type=Path),
     default=None,
-    help="Base output directory (default: current directory). Runs are stored under <output>/<paper_name>/.",
+    help="Workspace directory for this run (default: ./<paper_name>/). Used as-is — no paper-name subdir is appended.",
 )
 @click.option(
     "--model", "-m",
     default=None,
-    help="Claude model to use (default: Config.model, currently claude-haiku-4-5-20251001)",
+    help="Claude model to use (default: Config.model, currently claude-opus-4-6[1m])",
 )
 @click.option(
     "--max-retries",
@@ -344,16 +374,15 @@ async def run_pipeline(config: Config, resume: bool = False) -> bool:
         "DEV MODE for testing without burning Anthropic API tokens. "
         "Forces the Claude Agent SDK to use the user's Claude Code "
         "subscription (via the bundled `claude` CLI) by unsetting "
-        "ANTHROPIC_API_KEY in this process. Also implies --verbose, "
-        "and pins the model to claude-haiku-4-5 for fast iteration "
-        "unless --model is passed explicitly."
+        "ANTHROPIC_API_KEY in this process. Also implies --verbose. "
+        "Uses Config.model (Opus by default); pass --model to override."
     ),
 )
 @click.option(
     "--test",
     is_flag=True,
     help=(
-        "SMOKE TEST: zero-setup smoke run. Uses the bundled 3-page "
+        "SMOKE TEST: zero-setup smoke run. Uses the bundled 4-page "
         "test_paper.pdf, outputs to /tmp/rb-test, auto-wipes prior "
         "state, and implies --auto + --dev. A single command instead "
         "of four. Useful for iterating on harness changes."
@@ -428,6 +457,26 @@ async def run_pipeline(config: Config, resume: bool = False) -> bool:
     "When a sub-agent's compute request would exceed the cap mid-run, the harness asks you to "
     "approve raising it.",
 )
+@click.option(
+    "--llm-budget",
+    "llm_spend_cap_usd",
+    type=float,
+    default=None,
+    help="Hard cap on LLM spend for this run, in USD (covers sub-agent + orchestrator queries). "
+    "Defaults to $20 (or RB_LLM_SPEND_CAP_USD env). When total spend crosses the cap the run "
+    "aborts cleanly — remaining phases are marked failed so they can be resumed later. Set to "
+    "0 to disable.",
+)
+@click.option(
+    "--allow-dir",
+    "allow_dirs",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    multiple=True,
+    help="Extra directory the agent sandbox may read/write outside of the workspace cwd. "
+    "Repeatable. Each path is resolved to absolute. The agent can also call "
+    "mcp__access__read_outside_workspace at runtime to ask for paths not pre-allowed; "
+    "in interactive mode this surfaces a yes/no prompt, in --auto it is denied.",
+)
 def cli(
     paper: Path | None,
     output: Path | None,
@@ -447,6 +496,8 @@ def cli(
     wipe_flag: bool,
     project_root_override: Path | None,
     gpu_budget_usd: float | None,
+    llm_spend_cap_usd: float | None,
+    allow_dirs: tuple[Path, ...],
 ) -> None:
     """Reproduce a research paper's results.
 
@@ -499,10 +550,11 @@ def cli(
         popped = os.environ.pop("ANTHROPIC_API_KEY", None)
         # --dev implies --verbose
         verbose = True
-        # Pin to haiku unless user passed --model explicitly. Haiku is fast +
-        # cheap, ideal for dev iteration.
+        # Resolve model to Config default if not overridden, so the banner
+        # below shows the real value (not None) and Config doesn't get
+        # clobbered by an explicit None.
         if model is None:
-            model = "claude-haiku-4-5-20251001"
+            model = Config.__dataclass_fields__["model"].default
         # Big visible banner so it's impossible to confuse a dev run with prod.
         print("\033[1;33m" + "=" * 60 + "\033[0m")
         print("\033[1;33m  DEV MODE\033[0m")
@@ -541,13 +593,17 @@ def cli(
         if sys.stdin.isatty():
             _termios.tcflush(sys.stdin, _termios.TCIFLUSH)
 
-    # Build project_root: base_output / <paper_stem>
-    # --project-root overrides derivation (used by TUI subprocess).
+    # Build project_root.
+    # --project-root overrides everything (used by TUI subprocess).
+    # --output is used as-is when supplied (the literal workspace dir).
+    # If --output is omitted, default to ./<paper_stem>/ in the cwd so a
+    # bare `research-builder paper.pdf` still creates a sensibly-named dir.
     if project_root_override is not None:
         project_root = project_root_override
+    elif output is not None:
+        project_root = output
     else:
-        base_output = output or Path(".")
-        project_root = base_output / _paper_stem(paper)
+        project_root = Path(".") / _paper_stem(paper)
 
     # Detect partial run and decide resume vs fresh vs wipe BEFORE we set up
     # logging or launch the TUI — this is the only point where we can safely
@@ -575,15 +631,26 @@ def cli(
             )
             if auto:
                 ui.failure(
-                    "--auto mode cannot prompt. Pass --resume to continue, "
-                    "--fresh to archive and start over, or --wipe to delete and rerun."
+                    "--auto mode cannot prompt. "
+                    + ("Pass --fresh to archive and start over, or --wipe to delete and rerun."
+                       if existing.stale
+                       else "Pass --resume to continue, --fresh to archive and start over, or --wipe to delete and rerun.")
                 )
                 sys.exit(2)
-            choice = click.prompt(
-                "  [c]ontinue / [w]ipe and rerun / [n]ew run (archive old)",
-                type=click.Choice(["c", "w", "n"], case_sensitive=False),
-                default="c",
-            )
+            # Stale workspaces aren't resumable (no parseable state.json) —
+            # omit the [c]ontinue option so the operator picks wipe or archive.
+            if existing.stale:
+                choice = click.prompt(
+                    "  [w]ipe and rerun / [n]ew run (archive old)",
+                    type=click.Choice(["w", "n"], case_sensitive=False),
+                    default="w",
+                )
+            else:
+                choice = click.prompt(
+                    "  [c]ontinue / [w]ipe and rerun / [n]ew run (archive old)",
+                    type=click.Choice(["c", "w", "n"], case_sensitive=False),
+                    default="c",
+                )
             if choice == "c":
                 resume_decision = True
             elif choice == "w":
@@ -658,18 +725,25 @@ def cli(
         env_budget = os.environ.get("RB_GPU_BUDGET_USD")
         gpu_budget_usd = float(env_budget) if env_budget else 30.0
 
+    # Resolve LLM budget: --llm-budget > RB_LLM_SPEND_CAP_USD env > Config default ($20).
+    if llm_spend_cap_usd is None:
+        env_llm_cap = os.environ.get("RB_LLM_SPEND_CAP_USD")
+        llm_spend_cap_usd = float(env_llm_cap) if env_llm_cap else 20.0
+
+    # Assistant mode: --auto opts out of interactive checkpoints. Without
+    # --auto, the harness pauses for a human OK after spec creation and
+    # after each phase, and offers an [a]sk option that opens a chat with
+    # the orchestrator (paper + spec in context).
     config = Config(
         paper_path=paper.resolve(),
         project_root=project_root.resolve(),
         model=model,
         max_retries=max_retries,
         max_debug_attempts=max_debug_attempts,
-        # Interactive checkpoint prompts (click.prompt / InteractiveConsole)
-        # cannot coexist with the Textual alt-screen. The TUI provides its
-        # own interaction surface (chat pane), so we always run the pipeline
-        # in non-interactive mode under the TUI.
-        interactive=False,
+        interactive=not auto,
         gpu_budget_usd=gpu_budget_usd,
+        llm_spend_cap_usd=llm_spend_cap_usd,
+        extra_allowed_dirs=[p.resolve() for p in allow_dirs],
     )
 
     # Pipeline always runs inline now (--auto or not). The inline viewer
@@ -696,9 +770,40 @@ def cli(
     try:
         from .viewer.inline import inline_viewer_for
 
+        # Persistent bottom-anchored input box (Claude-Code-style ``> ``
+        # prompt) is enabled in interactive mode on a real TTY. Typed
+        # text is delivered to the orchestrator via the inbox — same
+        # path the web chat uses.
+        chat_enabled = config.interactive and sys.stdin.isatty()
+
         async def _run_with_viewer():
-            with inline_viewer_for(workspace_label=project_root.name):
-                return await run_pipeline(config, resume=resume_decision)
+            if chat_enabled:
+                from prompt_toolkit.patch_stdout import patch_stdout
+                from .commands import get_inbox
+                from .terminal_input import run_terminal_input
+
+                with patch_stdout(raw=True):
+                    input_task = asyncio.create_task(
+                        run_terminal_input(get_inbox()),
+                    )
+                    try:
+                        with inline_viewer_for(
+                            workspace_label=project_root.name,
+                            interactive=config.interactive,
+                        ):
+                            return await run_pipeline(config, resume=resume_decision)
+                    finally:
+                        input_task.cancel()
+                        try:
+                            await input_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+            else:
+                with inline_viewer_for(
+                    workspace_label=project_root.name,
+                    interactive=config.interactive,
+                ):
+                    return await run_pipeline(config, resume=resume_decision)
 
         success = asyncio.run(_run_with_viewer())
     except Exception:

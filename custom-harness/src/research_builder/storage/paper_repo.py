@@ -8,8 +8,9 @@ skill workflow uses, so EITHER interface can read EITHER set of artifacts:
     Internal (harness)                  →  Paper-repo (user-facing, shared)
     ─────────────────────────────────────────────────────────────────
     canonical_spec/spec.md              →  CLAUDE.md
-    canonical_spec/claims.yaml          →  notes/claims.yaml
-    canonical_spec/revision_log.yaml    →  notes/journal.md  (markdown row blocks)
+    canonical_spec/claims.json          →  notes/claims.yaml  (YAML output is intentional —
+                                              the skill workflow's compare-claims.py reads YAML)
+    canonical_spec/revision_log.json    →  notes/journal.md   (markdown row blocks)
     logs/postmortems/<phase>/retry_N.md →  notes/post-mortems/<phase>-retry-<N>.md
 
 Called at meaningful checkpoints from orchestrator/loop.py:
@@ -64,7 +65,7 @@ def project_claims_to_notes(config: Config, ledger: ClaimsLedger) -> None:
     import yaml
     config.notes_dir.mkdir(parents=True, exist_ok=True)
     body = (
-        "# Claims Ledger — projected from canonical_spec/claims.yaml by the harness.\n"
+        "# Claims Ledger — projected from canonical_spec/claims.json by the harness.\n"
         "# The Claude Code skill workflow's compare-claims.py reads this same format.\n\n"
     )
     payload = {"claims": [c.model_dump(mode="json") for c in ledger.claims]}

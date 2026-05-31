@@ -31,3 +31,19 @@ phases.bak.*/
 
 # Per-paper scratch dirs (pre-migration; replaced by papers/<slug>/ later)
 attentionisallyouneed/
+
+# Per-paper run outputs at root (slugged directories produced by the harness)
+runs/
+
+# Vite/React frontend build artifacts
+custom-harness/frontend/node_modules/
+custom-harness/frontend/dist/
+
+# Local FastAPI app caches
+custom-harness/web/.cache/
+
+# Bundled example run outputs (kept tracked: examples/test_paper_run/)
+custom-harness/examples/*/runs/
+
+# OS cruft
+.DS_Store
